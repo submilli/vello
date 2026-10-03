@@ -957,7 +957,6 @@ mod tests {
     #[cfg(feature = "text")]
     use crate::peniko::{Blob, FontData};
     use crate::{CompositeMode, RasterizerSettings, RenderContext, Resources};
-    #[cfg(feature = "text")]
     use alloc::sync::Arc;
     use alloc::vec;
     #[cfg(feature = "text")]
@@ -1001,6 +1000,52 @@ mod tests {
         ctx.fill_rect(&rect);
         ctx.flush();
         ctx
+    }
+
+    #[test]
+    fn nearest_sampling_resolves_boundary_ties_in_geometric_direction() {
+        use crate::kurbo::Affine;
+        use crate::peniko::{ImageBrush, ImageQuality, ImageSampler};
+        use crate::{ImageSource, PaintType};
+
+        let image = Arc::new(Pixmap::from_parts(
+            vec![red_pixel(), blue_pixel(), blue_pixel(), red_pixel()],
+            2,
+            2,
+        ));
+        for transform in [
+            Affine::scale(0.5),
+            Affine::new([-0.5, 0.0, 0.0, 0.5, 1.0, 0.0]),
+        ] {
+            for mode in [
+                crate::RenderMode::OptimizeSpeed,
+                crate::RenderMode::OptimizeQuality,
+            ] {
+                let mut context = RenderContext::new(1, 1);
+                context.set_transform(transform);
+                context.set_paint(PaintType::Image(ImageBrush {
+                    image: ImageSource::Pixmap(image.clone()),
+                    sampler: ImageSampler::default().with_quality(ImageQuality::Low),
+                }));
+                context.fill_rect(&Rect::new(0.0, 0.0, 2.0, 2.0));
+                context.flush();
+                let mut output = Pixmap::new(1, 1);
+                context.render_with(
+                    &mut output,
+                    &mut Resources::new(),
+                    RasterizerSettings {
+                        render_mode: mode,
+                        ..Default::default()
+                    },
+                );
+                let expected = if transform.as_coeffs()[0] > 0.0 {
+                    red_pixel()
+                } else {
+                    blue_pixel()
+                };
+                assert_eq!(output.sample(0, 0), expected);
+            }
+        }
     }
 
     #[test]

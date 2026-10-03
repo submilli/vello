@@ -34,10 +34,13 @@ impl<'a, S: Simd> PlainNNImagePainter<'a, S> {
             || {
                 let y_positions = extend(
                     simd,
-                    f32x4::splat_pos(
-                        simd,
-                        data.cur_pos.y as f32,
-                        data.x_advances.1,
+                    nearest_position(
+                        f32x4::splat_pos(
+                            simd,
+                            data.cur_pos.y as f32,
+                            data.x_advances.1,
+                            data.y_advances.1,
+                        ),
                         data.y_advances.1,
                     ),
                     image.sampler.y_extend,
@@ -71,7 +74,7 @@ impl<S: Simd> Iterator for PlainNNImagePainter<'_, S> {
     fn next(&mut self) -> Option<Self::Item> {
         let x_pos = extend(
             self.simd,
-            self.cur_x_pos,
+            nearest_position(self.cur_x_pos, self.data.x_advances.0),
             self.data.image.sampler.x_extend,
             self.data.width,
             self.data.width_inv,
@@ -115,11 +118,14 @@ impl<S: Simd> Iterator for NNImagePainter<'_, S> {
     fn next(&mut self) -> Option<Self::Item> {
         let x_positions = extend(
             self.simd,
-            f32x4::splat_pos(
-                self.simd,
-                self.data.cur_pos.x as f32,
+            nearest_position(
+                f32x4::splat_pos(
+                    self.simd,
+                    self.data.cur_pos.x as f32,
+                    self.data.x_advances.0,
+                    self.data.y_advances.0,
+                ),
                 self.data.x_advances.0,
-                self.data.y_advances.0,
             ),
             self.data.image.sampler.x_extend,
             self.data.width,
@@ -128,10 +134,13 @@ impl<S: Simd> Iterator for NNImagePainter<'_, S> {
 
         let y_positions = extend(
             self.simd,
-            f32x4::splat_pos(
-                self.simd,
-                self.data.cur_pos.y as f32,
-                self.data.x_advances.1,
+            nearest_position(
+                f32x4::splat_pos(
+                    self.simd,
+                    self.data.cur_pos.y as f32,
+                    self.data.x_advances.1,
+                    self.data.y_advances.1,
+                ),
                 self.data.y_advances.1,
             ),
             self.data.image.sampler.y_extend,
@@ -340,6 +349,18 @@ impl<S: Simd, const QUALITY: u8> Iterator for FilteredImagePainter<'_, S, QUALIT
 f32x16_painter!(FilteredImagePainter<'_, S, 1>);
 // Bicubic
 f32x16_painter!(FilteredImagePainter<'_, S, 2>);
+
+/// Resolve exact texel-boundary ties toward the preceding texel for positive
+/// scales. Reversed axes keep the following texel, preserving geometric direction.
+/// This matches Skia's nearest sampling convention without biasing nearby samples.
+#[inline(always)]
+fn nearest_position<S: Simd>(position: f32x4<S>, advance: f32) -> f32x4<S> {
+    if advance > 0.0 {
+        position.ceil() - 1.0
+    } else {
+        position
+    }
+}
 
 /// Computes the positive fractional part of a value: `val - val.floor()`.
 ///
