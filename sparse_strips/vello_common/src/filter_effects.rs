@@ -75,16 +75,25 @@ impl Filter {
     /// Converts a high-level CSS-style filter function into a filter graph.
     /// Use this for simple effects like blur, brightness, etc.
     pub fn from_function(function: FilterFunction) -> Self {
-        // Convert function to primitive
-        let primitive = match function {
-            FilterFunction::Blur { radius } => FilterPrimitive::GaussianBlur {
-                std_deviation: radius,
-                edge_mode: EdgeMode::default(),
-            },
-            _ => unimplemented!("Filter function {:?} not supported", function),
-        };
+        Self::from_primitive(crate::filter::css::primitive(function))
+    }
 
-        Self::from_primitive(primitive)
+    /// Construct a sequential CPU filter chain of at most 32 supported operations.
+    /// Each operation consumes the previous output. General SVG graphs remain separate.
+    /// Invalid parameters or unsupported primitives return `None` before rendering.
+    pub fn from_chain(primitives: impl IntoIterator<Item = FilterPrimitive>) -> Option<Self> {
+        let mut graph = FilterGraph::new();
+        graph.sequential = true;
+        for primitive in primitives {
+            if graph.primitives.len() == 32 || !crate::filter::css::supported(&primitive) {
+                return None;
+            }
+            let output = graph.add(primitive, None);
+            graph.set_output(output);
+        }
+        Some(Self {
+            graph: Arc::new(graph),
+        })
     }
 
     /// Create a filter system from a filter primitive.
@@ -154,6 +163,7 @@ pub struct FilterGraph {
     pub output: FilterId,
     /// Next available filter ID (monotonically increasing counter).
     next_id: u16,
+    sequential: bool,
     /// Accumulated filter expansion from all primitives in the graph, cached in user space.
     filter_expansion: Rect,
     /// Accumulated source expansion from all primitives in the graph, cached in user space.
@@ -173,6 +183,7 @@ impl FilterGraph {
             primitives: SmallVec::new(),
             output: FilterId(0),
             next_id: 0,
+            sequential: false,
             filter_expansion: Rect::ZERO,
             source_expansion: Rect::ZERO,
         }
@@ -186,12 +197,24 @@ impl FilterGraph {
         let id = FilterId(self.next_id);
         self.next_id += 1;
 
-        self.filter_expansion = self.filter_expansion.union(primitive.filter_expansion());
-        self.source_expansion = self.source_expansion.union(primitive.source_expansion());
+        let combine = |a: Rect, b: Rect| {
+            if self.sequential {
+                Rect::new(a.x0 + b.x0, a.y0 + b.y0, a.x1 + b.x1, a.y1 + b.y1)
+            } else {
+                a.union(b)
+            }
+        };
+        self.filter_expansion = combine(self.filter_expansion, primitive.filter_expansion());
+        self.source_expansion = combine(self.source_expansion, primitive.source_expansion());
 
         self.primitives.push(primitive);
 
         id
+    }
+
+    /// Whether this graph was constructed as a sequential CPU chain.
+    pub fn is_sequential(&self) -> bool {
+        self.sequential
     }
 
     /// Set the output filter for the graph.

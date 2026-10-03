@@ -60,7 +60,7 @@ pub struct Glyph {
 /// Synthetic embolden settings for a glyph run.
 #[derive(Clone, Copy, Debug)]
 pub struct FontEmbolden {
-    /// Synthetic embolden amount.
+    /// Synthetic embolden amount in nominal glyph-run pixels, before transforms.
     pub amount: Diagonal2,
     /// Join style used when expanding outlines.
     pub join: Join,
@@ -76,6 +76,29 @@ impl FontEmbolden {
         Self {
             amount,
             ..Self::default()
+        }
+    }
+
+    /// Expand an outline expressed in the same pixel coordinates as these settings.
+    /// Shared by rendering and clients that measure/admit the resulting geometry.
+    pub fn expand_outline(&self, path: &BezPath) -> BezPath {
+        if self.amount == Diagonal2::new(0.0, 0.0) {
+            return path.clone();
+        }
+        kurbo::expand_path(
+            path,
+            self.amount,
+            self.join,
+            self.miter_limit,
+            self.tolerance,
+        )
+    }
+
+    fn scaled(self, factor: f64) -> Self {
+        Self {
+            amount: Diagonal2::new(self.amount.xx * factor, self.amount.yy * factor),
+            tolerance: self.tolerance * factor.abs(),
+            ..self
         }
     }
 
@@ -762,7 +785,7 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
         // Collect and merge exclusion zones from all glyphs.
         let exclusions = &mut self.underline_span_cache;
         // We `drain` this when creating the iterator, but just in case...
-        exclusions.truncate(0);
+        exclusions.clear();
 
         for glyph in self.glyph_iterator.clone() {
             // TODO: skip ink for color and bitmap glyphs
@@ -1638,7 +1661,14 @@ fn prepare_glyph_run<'a>(run: GlyphRun<'a>, hint_cache: &'a mut HintCache) -> Pr
         font: run.font,
         font_info,
         run_size: run.font_size,
-        font_embolden: run.font_embolden,
+        // Cache geometry can be in UPEM coordinates, nominal pixels, or pixels
+        // after absorbing a transform. Store em-relative expansion so all three
+        // paths (and their cache keys) represent the same nominal-pixel amount.
+        font_embolden: if run.font_size > 0.0 && run.font_size.is_finite() {
+            run.font_embolden.scaled(1.0 / f64::from(run.font_size))
+        } else {
+            FontEmbolden::default()
+        },
         glyph_transform: run.glyph_transform,
         draw_props: DrawProps {
             positioning_transform: run
@@ -1984,13 +2014,9 @@ impl<'a> OutlineCacheSession<'a> {
                 drawing_buf.reuse();
                 outline_glyph.draw(draw_settings, &mut drawing_buf).unwrap();
                 if embolden.amount != Diagonal2::new(0.0, 0.0) {
-                    drawing_buf.path = kurbo::expand_path(
-                        &drawing_buf.path,
-                        embolden.amount,
-                        embolden.join,
-                        embolden.miter_limit,
-                        embolden.tolerance,
-                    );
+                    drawing_buf.path = embolden
+                        .scaled(f64::from(size))
+                        .expand_outline(&drawing_buf.path);
                 }
 
                 let bbox = drawing_buf.path.bounding_box();
@@ -2433,5 +2459,65 @@ mod tests {
     #[test]
     fn bitmap_glyph_is_not_cached_when_atlas_cache_is_disabled() {
         ensure_no_cache(TestGlyphKind::Bitmap, Style::Fill, false);
+    }
+    #[test]
+    fn embolden_has_nominal_pixel_units_across_cache_sizes_and_absorbed_scales() {
+        let font = test_font(TestGlyphKind::Outline);
+        let glyph = test_glyph(&font, TestGlyphKind::Outline);
+        let font_ref = font.as_skrifa();
+        let outlines = font_ref.outline_glyphs();
+        let outline = outlines.get(GlyphId::new(glyph.id)).unwrap();
+        let mut reference: Option<Rect> = None;
+        for transform in [Affine::IDENTITY, Affine::scale(2.0)] {
+            for style in [Style::Fill, Style::Stroke] {
+                let mut hints = HintCache::default();
+                let run = prepare_glyph_run(
+                    GlyphRun {
+                        font: font.clone(),
+                        font_size: 20.0,
+                        font_embolden: FontEmbolden::new(Diagonal2::new(0.5, 0.5)),
+                        transform,
+                        scene_paint_transform: transform,
+                        glyph_transform: None,
+                        normalized_coords: &[],
+                        hint: false,
+                    },
+                    &mut hints,
+                );
+                let scale = GlyphScaleProperties::new(
+                    run.draw_props.font_size,
+                    run.font_info.upem,
+                    false,
+                    style,
+                );
+                let mut cache = OutlineCache::default();
+                let mut session = OutlineCacheSession::new(&mut cache, VarLookupKey::new(&[]));
+                let cached = session.get_or_insert(
+                    glyph.id,
+                    run.font_info,
+                    scale.cache_size,
+                    run.font_embolden,
+                    VarLookupKey::new(&[]),
+                    &outline,
+                    None,
+                );
+                let bbox = (Affine::scale(20.0 / f64::from(scale.cache_size))
+                    * cached.path.as_ref().clone())
+                .bounding_box();
+                if let Some(expected) = reference {
+                    for (actual, expected) in [bbox.x0, bbox.y0, bbox.x1, bbox.y1]
+                        .into_iter()
+                        .zip([expected.x0, expected.y0, expected.x1, expected.y1])
+                    {
+                        assert!(
+                            (actual - expected).abs() < 0.01,
+                            "{bbox:?} versus {expected}"
+                        );
+                    }
+                } else {
+                    reference = Some(bbox);
+                }
+            }
+        }
     }
 }

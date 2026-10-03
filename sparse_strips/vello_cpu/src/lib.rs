@@ -173,7 +173,7 @@ pub use render::{
 // Note: The first one is not something that should be
 // exposed, but is currently needed by vello_sparse_tests.
 #[cfg(feature = "text")]
-pub use glifo::Glyph;
+pub use glifo::{FontEmbolden, Glyph};
 #[cfg(feature = "text")]
 pub use text::{CpuGlyphRunBackend, GlyphRunBuilder};
 pub use vello_common::fearless_simd::Level;

@@ -8,6 +8,7 @@
 //! Filters are applied to rendered layer pixmaps and may use scratch storage for
 //! intermediate buffers.
 
+mod color_matrix;
 pub(crate) mod context;
 mod drop_shadow;
 mod flood;
@@ -17,7 +18,7 @@ mod shift;
 
 use context::ScratchBuffer;
 use vello_common::filter::PreparedFilter;
-use vello_common::filter_effects::Filter;
+use vello_common::filter_effects::{Filter, FilterPrimitive};
 use vello_common::kurbo::Affine;
 use vello_common::pixmap::Pixmap;
 
@@ -56,14 +57,29 @@ pub(crate) trait FilterEffect {
 /// * `transform` - The transformation matrix to extract scale from for filter parameters
 ///
 /// # Limitations
-/// Currently only supports filter graphs with a single primitive.
-/// Multi-primitive filter graphs are not yet implemented.
+/// Supports single primitives and the explicit sequential CPU chain constructor.
+/// General SVG graph connections remain unsupported.
 pub(crate) fn filter_lowp(
     filter: &Filter,
     pixmap: &mut Pixmap,
     filter_scratch: &mut ScratchBuffer,
     transform: Affine,
 ) {
+    if filter.graph.is_sequential() {
+        for primitive in &filter.graph.primitives {
+            filter_lowp(
+                &Filter::from_primitive(primitive.clone()),
+                pixmap,
+                filter_scratch,
+                transform,
+            );
+        }
+        return;
+    }
+    if let [FilterPrimitive::ColorMatrix { matrix }] = filter.graph.primitives.as_slice() {
+        color_matrix::apply(pixmap, matrix);
+        return;
+    }
     let prepared_filter = PreparedFilter::new(filter, &transform);
 
     match prepared_filter {
@@ -94,14 +110,29 @@ pub(crate) fn filter_lowp(
 /// * `transform` - The transformation matrix to extract scale from for filter parameters
 ///
 /// # Limitations
-/// Currently only supports filter graphs with a single primitive.
-/// Multi-primitive filter graphs are not yet implemented.
+/// Supports single primitives and the explicit sequential CPU chain constructor.
+/// General SVG graph connections remain unsupported.
 pub(crate) fn filter_highp(
     filter: &Filter,
     pixmap: &mut Pixmap,
     filter_scratch: &mut ScratchBuffer,
     transform: Affine,
 ) {
+    if filter.graph.is_sequential() {
+        for primitive in &filter.graph.primitives {
+            filter_highp(
+                &Filter::from_primitive(primitive.clone()),
+                pixmap,
+                filter_scratch,
+                transform,
+            );
+        }
+        return;
+    }
+    if let [FilterPrimitive::ColorMatrix { matrix }] = filter.graph.primitives.as_slice() {
+        color_matrix::apply(pixmap, matrix);
+        return;
+    }
     let prepared_filter = PreparedFilter::new(filter, &transform);
 
     match prepared_filter {
