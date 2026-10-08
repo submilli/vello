@@ -208,10 +208,12 @@ impl DecimationSizer {
     /// Apply a new upscale operation.
     #[inline]
     pub fn upscale(&mut self) -> (u16, u16) {
-        let (target_w, target_h) = self.dim_stack.pop().unwrap();
-        // Clamp because upscale can exceed target on odd dimensions (e.g., 5→3→6 > 5)
-        self.width = (self.width * 2).min(target_w);
-        self.height = (self.height * 2).min(target_h);
+        if let Some((target_w, target_h)) = self.dim_stack.pop() {
+            // Restore the recorded size directly: doubling overflows at 65535
+            // and cannot reconstruct odd dimensions or a one-pixel axis.
+            self.width = target_w;
+            self.height = target_h;
+        }
         (self.width, self.height)
     }
 }

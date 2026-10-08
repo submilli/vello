@@ -192,3 +192,6 @@ pub enum RenderMode {
     /// Optimize quality (by performing calculations with f32).
     OptimizeQuality,
 }
+
+/// Bounded SVG filter graph execution over rasterized source pixels.
+pub use filter::graph::apply_svg_graph;

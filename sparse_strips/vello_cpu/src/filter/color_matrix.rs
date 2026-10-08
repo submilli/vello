@@ -5,45 +5,24 @@
 
 use vello_common::pixmap::Pixmap;
 
-pub(super) fn apply(pixmap: &mut Pixmap, matrix: &[f32; 20]) {
-    for pixel in pixmap.data_mut() {
-        let alpha = f32::from(pixel.a);
-        let input = if pixel.a == 0 {
-            [0.0; 4]
-        } else {
-            [
-                f32::from(pixel.r) / alpha,
-                f32::from(pixel.g) / alpha,
-                f32::from(pixel.b) / alpha,
-                alpha / 255.0,
-            ]
-        };
-        let mut output = [0.0; 4];
-        for (channel, row) in output.iter_mut().zip(matrix.as_chunks::<5>().0) {
-            *channel = (input
-                .iter()
-                .zip(row)
-                .map(|(v, factor)| v * factor)
-                .sum::<f32>()
-                + row[4])
-                .clamp(0.0, 1.0);
-        }
-        let alpha = output[3] * 255.0;
-        pixel.r = quantize(output[0] * alpha);
-        pixel.g = quantize(output[1] * alpha);
-        pixel.b = quantize(output[2] * alpha);
-        pixel.a = quantize(alpha);
-    }
-    pixmap.recompute_may_have_transparency();
+use super::channels::{encode, straight};
+use vello_common::filter::graph::ColorSpace;
+
+pub(super) fn apply(pixels: &mut Pixmap, matrix: &[f32; 20]) {
+    apply_in_space(pixels, matrix, ColorSpace::Srgb);
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "Channels are clamped to 0..255 before rounding."
-)]
-fn quantize(channel: f32) -> u8 {
-    (channel + 0.5) as u8
+pub(super) fn apply_in_space(pixels: &mut Pixmap, matrix: &[f32; 20], space: ColorSpace) {
+    for p in pixels.data_mut() {
+        let input = straight(*p, space);
+        let mut output = [0.0; 4];
+        for (value, row) in output.iter_mut().zip(matrix.as_chunks::<5>().0) {
+            *value =
+                (input.iter().zip(row).map(|(v, k)| v * k).sum::<f32>() + row[4]).clamp(0.0, 1.0);
+        }
+        *p = encode(output, space);
+    }
+    pixels.recompute_may_have_transparency();
 }
 
 #[cfg(test)]

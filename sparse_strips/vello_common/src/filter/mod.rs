@@ -22,7 +22,9 @@ pub(crate) mod css;
 pub mod drop_shadow;
 pub mod flood;
 pub mod gaussian_blur;
+pub mod graph;
 pub mod offset;
+pub(crate) mod parameters;
 
 /// A filter that has been prepared for rendering.
 #[derive(Debug)]

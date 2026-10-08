@@ -8,13 +8,18 @@
 //! Filters are applied to rendered layer pixmaps and may use scratch storage for
 //! intermediate buffers.
 
+mod channels;
 mod color_matrix;
 pub(crate) mod context;
 mod drop_shadow;
+mod float_blur;
 mod flood;
 mod gaussian_blur;
+pub(crate) mod graph;
+mod linear_effects;
 mod offset;
 mod shift;
+mod svg_channels;
 
 use context::ScratchBuffer;
 use vello_common::filter::PreparedFilter;

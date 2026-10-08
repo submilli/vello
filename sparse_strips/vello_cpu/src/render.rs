@@ -247,6 +247,15 @@ impl RenderContext {
         }
     }
 
+    /// Isolate a device-space region while preserving caller path/paint transforms.
+    pub fn new_with_origin(width: u16, height: u16, origin: Point) -> Self {
+        let mut context = Self::new(width, height);
+        context
+            .root_transforms
+            .push_root(Affine::translate((-origin.x, -origin.y)));
+        context
+    }
+
     fn transforms(&self) -> &Transforms {
         &self.state.transforms
     }
@@ -1114,6 +1123,23 @@ mod tests {
                 assert_eq!(pixmap.sample(x, y), expected, "pixel at ({x}, {y})");
             }
         }
+    }
+
+    #[test]
+    fn isolated_origin_preserves_caller_transform_and_reset() {
+        use vello_common::kurbo::{Affine, Point};
+        let mut ctx = RenderContext::new_with_origin(3, 2, Point::new(10.0, 20.0));
+        ctx.set_paint(RED);
+        ctx.set_transform(Affine::translate((10.0, 20.0)));
+        ctx.fill_rect(&Rect::new(1.0, 0.0, 2.0, 1.0));
+        ctx.reset_transform();
+        ctx.set_paint(BLUE);
+        ctx.fill_rect(&Rect::new(10.0, 21.0, 11.0, 22.0));
+        let mut pixmap = solid_pixmap(3, 2, transparent_pixel());
+        ctx.render(&mut pixmap, &mut Resources::new());
+        assert_eq!(pixmap.sample(1, 0), red_pixel());
+        assert_eq!(pixmap.sample(0, 1), blue_pixel());
+        assert_eq!(pixmap.sample(0, 0), transparent_pixel());
     }
 
     #[test]
