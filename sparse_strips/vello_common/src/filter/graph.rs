@@ -3,7 +3,7 @@
 
 //! Validated SVG graph plans. Parsing and resource authority belong to the caller.
 
-pub use super::parameters::{MAX_KERNEL_ENTRIES, MAX_TURBULENCE_OCTAVES};
+pub use super::parameters::{MAX_KERNEL_ENTRIES, MAX_MORPHOLOGY_RADIUS, MAX_TURBULENCE_OCTAVES};
 use crate::filter_effects::FilterPrimitive;
 use crate::kurbo::Rect;
 use alloc::vec::Vec;
@@ -74,6 +74,8 @@ pub enum GraphError {
     Unsupported,
     /// Aggregate intermediate pixels exceed the renderer's bound.
     Memory,
+    /// Aggregate estimated per-pixel work exceeds [`MAX_WORK`].
+    Work,
 }
 
 impl SvgGraph {
@@ -144,10 +146,16 @@ impl SvgGraph {
         let work: u64 = self
             .nodes
             .iter()
-            .map(|node| super::parameters::cost(&node.primitive))
+            .map(|node| {
+                let conversion = match node.color_space {
+                    ColorSpace::Srgb => 0,
+                    ColorSpace::LinearRgb => super::parameters::LINEAR_CONVERSION_COST,
+                };
+                super::parameters::cost(&node.primitive) + conversion
+            })
             .sum();
         if work.saturating_mul(area as u64) > MAX_WORK {
-            return Err(GraphError::Memory);
+            return Err(GraphError::Work);
         }
         Ok(())
     }
@@ -293,8 +301,9 @@ mod tests {
         };
         let convolve = |kernel| with(FilterPrimitive::ConvolveMatrix { kernel }, None);
         assert!(SvgGraph::new([convolve(kernel(128, 2, 256, 0))], rect, 0).is_ok());
+        // Oversized kernels are admitted and pass their input through, as in Chrome.
+        assert!(SvgGraph::new([convolve(kernel(129, 2, 258, 0))], rect, 0).is_ok());
         for invalid in [
-            kernel(129, 2, 258, 0),
             kernel(3, 3, 8, 0),
             kernel(3, 3, 9, 3),
             kernel(0, 3, 0, 0),
@@ -360,7 +369,7 @@ mod tests {
         let one = SvgGraph::new([taps.clone()], rect, 0).unwrap();
         assert!(one.admit_pixels(900, 900).is_ok());
         let three = SvgGraph::new([taps.clone(), taps.clone(), taps], rect, 2).unwrap();
-        assert_eq!(three.admit_pixels(900, 900), Err(GraphError::Memory));
+        assert_eq!(three.admit_pixels(900, 900), Err(GraphError::Work));
         // Octaves beyond the cap cost no more than the cap.
         let noise = |num_octaves| Node {
             primitive: FilterPrimitive::Turbulence {

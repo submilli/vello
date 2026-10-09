@@ -688,12 +688,13 @@ impl FilterPrimitive {
                 blur_radius(*std_deviation_y),
             ),
             // Erosion reads the same neighborhood that dilation writes; radii are
-            // capped at 256 pixels.
+            // capped as in execution.
             Self::Morphology {
                 radius_x, radius_y, ..
             } => {
-                let x = f64::from(radius_x.max(0.0)).round().min(256.0);
-                let y = f64::from(radius_y.max(0.0)).round().min(256.0);
+                let cap = f64::from(crate::filter::graph::MAX_MORPHOLOGY_RADIUS);
+                let x = f64::from(radius_x.max(0.0)).round().min(cap);
+                let y = f64::from(radius_y.max(0.0)).round().min(cap);
                 Rect::new(-x, -y, x, y)
             }
             Self::ConvolveMatrix { kernel } => {

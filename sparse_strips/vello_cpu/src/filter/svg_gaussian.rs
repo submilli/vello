@@ -7,6 +7,7 @@
 //! Chrome builds Skia without its direct Gaussian pass for small deviations, so a
 //! deviation whose box is a single pixel leaves that axis unchanged.
 //! See: <https://drafts.fxtf.org/filter-effects/#feGaussianBlurElement>
+use super::bounds::for_each_column;
 use alloc::vec;
 use alloc::vec::Vec;
 use vello_common::color::PremulRgba8;
@@ -26,7 +27,6 @@ pub(super) fn blur(pixels: &mut [PremulRgba8], width: usize, std_deviation: [f32
     if width == 0 || pixels.is_empty() {
         return;
     }
-    let height = pixels.len() / width;
     let mut line = Vec::new();
     if let Some(pass) = Pass::new(std_deviation[0]) {
         for row in pixels.chunks_exact_mut(width) {
@@ -34,24 +34,7 @@ pub(super) fn blur(pixels: &mut [PremulRgba8], width: usize, std_deviation: [f32
         }
     }
     if let Some(pass) = Pass::new(std_deviation[1]) {
-        let mut column = vec![
-            PremulRgba8 {
-                r: 0,
-                g: 0,
-                b: 0,
-                a: 0
-            };
-            height
-        ];
-        for x in 0..width {
-            for (y, value) in column.iter_mut().enumerate() {
-                *value = pixels[y * width + x];
-            }
-            pass.apply(&mut column, &mut line);
-            for (y, value) in column.iter().enumerate() {
-                pixels[y * width + x] = *value;
-            }
-        }
+        for_each_column(pixels, width, |column| pass.apply(column, &mut line));
     }
 }
 

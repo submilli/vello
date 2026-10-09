@@ -4,8 +4,13 @@
 use crate::color::{AlphaColor, Srgb};
 use crate::filter_effects::{CompositeOperator, FilterPrimitive, LightSource, TransferFunction};
 
-/// Largest admitted convolution kernel, in entries. Chrome ignores larger kernels.
+/// Largest executed convolution kernel, in entries. Like Chrome, larger kernels pass
+/// their input through.
 pub const MAX_KERNEL_ENTRIES: u32 = 256;
+/// Largest admitted kernel, bounding the retained values of a pass-through kernel.
+const MAX_ADMITTED_KERNEL_ENTRIES: u32 = 1 << 16;
+/// Morphology radii are capped at this many pixels, as Chrome does (crbug.com/1123035).
+pub const MAX_MORPHOLOGY_RADIUS: u32 = 256;
 /// Octaves past this are below 8-bit resolution; Chrome caps noise at the same count.
 pub const MAX_TURBULENCE_OCTAVES: u32 = 9;
 
@@ -67,13 +72,13 @@ pub(crate) fn valid(primitive: &FilterPrimitive) -> bool {
             .into_iter()
             .flatten()
             .all(valid_transfer),
-        // Execution caps radii at 256 pixels.
+        // Execution caps radii at `MAX_MORPHOLOGY_RADIUS`.
         FilterPrimitive::Morphology {
             radius_x, radius_y, ..
         } => magnitude(*radius_x) && magnitude(*radius_y),
         FilterPrimitive::ConvolveMatrix { kernel } => {
             let entries = kernel.columns.checked_mul(kernel.rows);
-            entries.is_some_and(|n| n > 0 && n <= MAX_KERNEL_ENTRIES)
+            entries.is_some_and(|n| n > 0 && n <= MAX_ADMITTED_KERNEL_ENTRIES)
                 && kernel.values.len() == entries.unwrap_or(0) as usize
                 && kernel.target_x < kernel.columns
                 && kernel.target_y < kernel.rows
@@ -110,7 +115,7 @@ pub(crate) fn valid(primitive: &FilterPrimitive) -> bool {
         } => {
             surface_scale.is_finite()
                 && specular_constant.is_finite()
-                && (1.0..=128.0).contains(specular_exponent)
+                && specular_exponent.is_finite()
                 && valid_color(*color)
                 && valid_light(light_source)
         }
@@ -119,7 +124,11 @@ pub(crate) fn valid(primitive: &FilterPrimitive) -> bool {
     }
 }
 
-/// Upper bound on per-pixel operations, used to admit a graph's total work.
+/// Per-pixel work, in units of roughly one four-channel multiply-add, used to
+/// admit a graph's total work. Blurs and shadows run up to four box/offset passes
+/// with conversions; morphology runs prefix/suffix scans per axis; lighting
+/// samples nine heights and evaluates vectors and a power; noise evaluates four
+/// lattice gradients per octave.
 pub(crate) fn cost(primitive: &FilterPrimitive) -> u64 {
     match primitive {
         FilterPrimitive::GaussianBlur { .. }
@@ -131,7 +140,13 @@ pub(crate) fn cost(primitive: &FilterPrimitive) -> u64 {
         | FilterPrimitive::DiffuseLighting { .. }
         | FilterPrimitive::SpecularLighting { .. } => 32,
         FilterPrimitive::ConvolveMatrix { kernel } => {
-            u64::from(kernel.columns) * u64::from(kernel.rows)
+            let entries = u64::from(kernel.columns) * u64::from(kernel.rows);
+            // Oversized kernels pass their input through.
+            if entries > u64::from(MAX_KERNEL_ENTRIES) {
+                1
+            } else {
+                entries
+            }
         }
         FilterPrimitive::Turbulence { num_octaves, .. } => {
             16 * u64::from((*num_octaves).clamp(1, MAX_TURBULENCE_OCTAVES))
@@ -139,6 +154,10 @@ pub(crate) fn cost(primitive: &FilterPrimitive) -> u64 {
         _ => 4,
     }
 }
+
+/// Extra per-pixel work of converting a linearRGB node's inputs and output, which
+/// evaluates several powers per pixel.
+pub(crate) const LINEAR_CONVERSION_COST: u64 = 24;
 
 fn finite(v: f32) -> bool {
     v.is_finite() && v.abs() <= 1e6

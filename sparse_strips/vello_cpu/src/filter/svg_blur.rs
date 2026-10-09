@@ -1,7 +1,7 @@
 // Copyright 2026 the Vello Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! SVG graph blur and shadow primitives on 8-bit working surfaces, as Chrome builds them.
-use super::channels::{from_space, in_space, premultiplied8, to_space};
+use super::channels::{color8, from_space, premultiplied8, to_space};
 use super::{context::ScratchBuffer, filter_lowp};
 use alloc::vec::Vec;
 use vello_common::color::{AlphaColor, PremulRgba8, Srgb};
@@ -41,13 +41,12 @@ pub(super) fn shadow(
 ) {
     let source = output.clone();
     blur(output, shadow.std_deviation, space);
-    // Chrome converts the shadow color to the working space at 8-bit precision.
-    let color = premultiplied8(in_space(shadow.color, space));
-    let color = [color.r, color.g, color.b, color.a].map(|c| f32::from(c) / 255.0);
+    // The shadow color fills the blurred alpha (Skia's SrcIn color filter).
+    let color = color8(shadow.color, space);
     for pixel in output.data_mut() {
         let alpha = f32::from(to_space(*pixel, space).a) / 255.0;
-        let painted = color.map(|c| c * alpha);
-        *pixel = from_space(premultiplied8(straight_of(painted)), space);
+        let painted = [color[0], color[1], color[2], color[3] * alpha];
+        *pixel = from_space(premultiplied8(painted), space);
     }
     filter_lowp(
         &Filter::from_primitive(FilterPrimitive::Offset {
@@ -60,20 +59,7 @@ pub(super) fn shadow(
     );
     if shadow.with_source {
         let mut foreground = source;
-        super::graph::composite(&mut foreground, output, CompositeOperator::Over, space);
+        super::svg_composite::composite(&mut foreground, output, CompositeOperator::Over, space);
         *output = foreground;
     }
-}
-
-fn straight_of(premultiplied: [f32; 4]) -> [f32; 4] {
-    let alpha = premultiplied[3];
-    if alpha <= 0.0 {
-        return [0.0; 4];
-    }
-    [
-        premultiplied[0] / alpha,
-        premultiplied[1] / alpha,
-        premultiplied[2] / alpha,
-        alpha,
-    ]
 }

@@ -65,6 +65,20 @@ fn unpremultiplied(pixel: PremulRgba8) -> [f32; 4] {
     ]
 }
 
+/// Transparent black, the value outside every input.
+pub(super) const TRANSPARENT: PremulRgba8 = PremulRgba8 {
+    r: 0,
+    g: 0,
+    b: 0,
+    a: 0,
+};
+
+/// Straight components of a paint color as Chrome adapts it to `space`: converted,
+/// then stored as an 8-bit color.
+pub(super) fn color8(color: AlphaColor<Srgb>, space: ColorSpace) -> [f32; 4] {
+    in_space(color, space).map(|c| f32::from(quantize(c)) / 255.0)
+}
+
 /// Straight components of a color in `space`.
 pub(super) fn in_space(color: AlphaColor<Srgb>, space: ColorSpace) -> [f32; 4] {
     let mut channels = color.components;

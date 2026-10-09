@@ -26,6 +26,7 @@ mod shift;
 mod svg_blend;
 mod svg_blur;
 mod svg_channels;
+mod svg_composite;
 mod svg_gaussian;
 mod svg_node;
 mod turbulence;

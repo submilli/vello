@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Execution of one admitted SVG graph node over its input rasters.
 use super::bounds::PixelBounds;
-use super::channels::encode;
+use super::channels::{TRANSPARENT, encode};
 use super::context::ScratchBuffer;
 use super::filter_lowp;
 use super::lighting::{Lighting, Reflection};
@@ -47,7 +47,7 @@ pub(super) fn execute(
         }
         FilterPrimitive::Composite { operator } => {
             if let Some(other) = other {
-                super::graph::composite(output, other, *operator, space);
+                super::svg_composite::composite(output, other, *operator, space);
             }
         }
         FilterPrimitive::Blend { mode } => {
@@ -163,7 +163,9 @@ pub(super) fn execute(
             };
             super::lighting::apply(output, &lighting, context.crop, context.origin, space);
         }
-        FilterPrimitive::Offset { .. } | FilterPrimitive::Image { .. } => {
+        // Admission rejects image inputs, which need resources the graph lacks.
+        FilterPrimitive::Image { .. } => {}
+        FilterPrimitive::Offset { .. } => {
             filter_lowp(
                 &Filter::from_primitive(primitive.clone()),
                 output,
@@ -225,12 +227,7 @@ fn tile(output: &mut Pixmap, context: &Context) {
                 tile.extend_y(y as i64, EdgeMode::Wrap),
             ) {
                 (Some(sx), Some(sy)) => source.data()[sy * width + sx],
-                _ => vello_common::color::PremulRgba8 {
-                    r: 0,
-                    g: 0,
-                    b: 0,
-                    a: 0,
-                },
+                _ => TRANSPARENT,
             };
             output.data_mut()[y * width + x] = pixel;
         }

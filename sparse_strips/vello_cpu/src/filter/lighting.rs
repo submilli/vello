@@ -4,7 +4,7 @@
 //!
 //! See: <https://drafts.fxtf.org/filter-effects/#feDiffuseLightingElement>
 use super::bounds::PixelBounds;
-use super::channels::{in_space, store};
+use super::channels::{color8, store};
 use alloc::vec;
 use vello_common::color::{AlphaColor, Srgb};
 use vello_common::filter::graph::ColorSpace;
@@ -17,7 +17,9 @@ use vello_common::pixmap::Pixmap;
 /// Chrome (Skia) smooths the spotlight cone edge over this cosine range.
 const CONE_SMOOTHING: f32 = 0.016;
 
-/// The reflection model and its constants.
+/// The reflection model and its constants, before Chrome's adjustments: negative
+/// constants are zero, exponents clamp to [1, 128], and a specular light without
+/// a positive constant renders as unlit (opaque black) diffuse lighting.
 #[derive(Clone, Copy)]
 pub(super) enum Reflection {
     Diffuse { constant: f32 },
@@ -44,9 +46,13 @@ pub(super) fn apply(
 ) {
     let width = usize::from(pixels.width());
     let alpha = |x: usize, y: usize| f32::from(pixels.data()[y * width + x].a) / 255.0;
-    // Chrome converts the light color to the working space at 8-bit precision.
-    let color =
-        in_space(lighting.color, space).map(|c| (c.clamp(0.0, 1.0) * 255.0).round() / 255.0);
+    let color = color8(lighting.color, space);
+    let reflection = chrome_reflection(lighting.reflection);
+    // A distant light has one direction for the whole surface.
+    let distant = match lighting.light {
+        LightSource::Distant { .. } => Some(light(lighting.light, [0.0; 3])),
+        _ => None,
+    };
     let mut output = vec![[0.0_f32; 4]; pixels.data().len()];
     for y in bounds.y0..bounds.y1 {
         for x in bounds.x0..bounds.x1 {
@@ -56,8 +62,8 @@ pub(super) fn apply(
                 (origin.y + y as f64 + 0.5) as f32,
                 lighting.surface_scale * alpha(x, y),
             ];
-            let (to_light, intensity) = light(lighting.light, position);
-            let factor = match lighting.reflection {
+            let (to_light, intensity) = distant.unwrap_or_else(|| light(lighting.light, position));
+            let factor = match reflection {
                 Reflection::Diffuse { constant } => constant * dot(normal, to_light).max(0.0),
                 Reflection::Specular { constant, exponent } => {
                     let half = normalize([to_light[0], to_light[1], to_light[2] + 1.0]);
@@ -67,7 +73,7 @@ pub(super) fn apply(
             let rgb: [f32; 3] =
                 core::array::from_fn(|i| (factor * intensity * color[i]).clamp(0.0, 1.0));
             // Specular alpha is the brightest channel, leaving premultiplied color.
-            let a = match lighting.reflection {
+            let a = match reflection {
                 Reflection::Diffuse { .. } => 1.0,
                 Reflection::Specular { .. } => rgb[0].max(rgb[1]).max(rgb[2]),
             };
@@ -75,6 +81,21 @@ pub(super) fn apply(
         }
     }
     store(pixels, &output, space);
+}
+
+fn chrome_reflection(reflection: Reflection) -> Reflection {
+    match reflection {
+        Reflection::Diffuse { constant } => Reflection::Diffuse {
+            constant: constant.max(0.0),
+        },
+        Reflection::Specular { constant, .. } if constant <= 0.0 => {
+            Reflection::Diffuse { constant: 0.0 }
+        }
+        Reflection::Specular { constant, exponent } => Reflection::Specular {
+            constant,
+            exponent: exponent.clamp(1.0, 128.0),
+        },
+    }
 }
 
 /// Sobel normals of the height map. Like Chrome, edge pixels repeat the nearest
@@ -122,12 +143,14 @@ fn light(source: &LightSource, surface: [f32; 3]) -> ([f32; 3], f32) {
             let to_light = normalize([x - surface[0], y - surface[1], z - surface[2]]);
             let direction = normalize([points_at_x - x, points_at_y - y, points_at_z - z]);
             let cosine = -dot(to_light, direction);
-            // Without a limiting cone only the hemisphere facing the target is lit.
-            let cutoff =
-                limiting_cone_angle.map_or(0.0, |angle| angle.abs().min(90.0).to_radians().cos());
+            // Like Chrome, a zero or wider-than-90-degree cone is no cone: only the
+            // hemisphere facing the target is lit.
+            let cutoff = limiting_cone_angle
+                .filter(|angle| *angle != 0.0 && angle.abs() <= 90.0)
+                .map_or(0.0, |angle| angle.abs().to_radians().cos());
             let mut intensity = 0.0;
             if cosine >= cutoff {
-                intensity = cosine.powf(*specular_exponent);
+                intensity = cosine.powf(specular_exponent.clamp(1.0, 128.0));
                 if cosine < cutoff + CONE_SMOOTHING {
                     intensity *= (cosine - cutoff) / CONE_SMOOTHING;
                 }

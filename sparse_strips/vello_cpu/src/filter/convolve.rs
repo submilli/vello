@@ -7,7 +7,7 @@ use super::bounds::PixelBounds;
 use super::channels::{premultiply, store, stored_straight, working};
 use alloc::vec;
 use alloc::vec::Vec;
-use vello_common::filter::graph::ColorSpace;
+use vello_common::filter::graph::{ColorSpace, MAX_KERNEL_ENTRIES};
 use vello_common::filter_effects::{ConvolutionKernel, EdgeMode};
 use vello_common::pixmap::Pixmap;
 
@@ -20,7 +20,9 @@ pub(super) fn apply(
     space: ColorSpace,
 ) {
     let width = usize::from(pixels.width());
-    if width == 0 || pixels.height() == 0 {
+    let entries = u64::from(kernel.columns) * u64::from(kernel.rows);
+    // Chrome ignores kernels larger than its bound and passes the input through.
+    if width == 0 || pixels.height() == 0 || entries > u64::from(MAX_KERNEL_ENTRIES) {
         return;
     }
     // With preserveAlpha, color is convolved unpremultiplied and alpha is kept.
@@ -76,4 +78,60 @@ fn sample(
     let x = bounds.extend_x(x, edge)?;
     let y = bounds.extend_y(y, edge)?;
     Some(data[y * width + x])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vello_common::color::PremulRgba8;
+
+    fn kernel(columns: u32, rows: u32, values: Vec<f32>) -> ConvolutionKernel {
+        ConvolutionKernel {
+            columns,
+            rows,
+            values,
+            target_x: 0,
+            target_y: 0,
+            divisor: 1.0,
+            bias: 0.0,
+            edge_mode: EdgeMode::None,
+            preserve_alpha: false,
+        }
+    }
+
+    #[test]
+    fn kernels_shift_like_svg_and_oversized_kernels_pass_through() {
+        let mut pixels = Pixmap::new(3, 1);
+        pixels.data_mut()[2] = PremulRgba8 {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
+        let bounds = PixelBounds {
+            x0: 0,
+            y0: 0,
+            x1: 3,
+            y1: 1,
+        };
+        let mut oversized = pixels.clone();
+        apply(
+            &mut oversized,
+            &kernel(257, 1, vec![0.0; 257]),
+            bounds,
+            ColorSpace::Srgb,
+        );
+        assert_eq!(oversized.data(), pixels.data());
+        // The rotated kernel [1, 0] with target 0 reads the next pixel.
+        apply(
+            &mut pixels,
+            &kernel(2, 1, vec![1.0, 0.0]),
+            bounds,
+            ColorSpace::Srgb,
+        );
+        assert_eq!(
+            pixels.data().iter().map(|p| p.a).collect::<Vec<_>>(),
+            [0, 255, 0]
+        );
+    }
 }

@@ -4,7 +4,8 @@
 //!
 //! See: <https://drafts.fxtf.org/filter-effects/#feDisplacementMapElement>
 use super::bounds::PixelBounds;
-use super::channels::straight;
+use super::channels::{TRANSPARENT, from_space, straight, to_space};
+use alloc::vec::Vec;
 use vello_common::color::PremulRgba8;
 use vello_common::filter::graph::ColorSpace;
 use vello_common::filter_effects::{ColorChannel, EdgeMode};
@@ -12,10 +13,10 @@ use vello_common::filter_effects::{ColorChannel, EdgeMode};
 use vello_common::kurbo::common::FloatFuncs as _;
 use vello_common::pixmap::Pixmap;
 
-/// Displace `pixels` (the `in` image) by unpremultiplied channels of `map`.
-/// Only the map is interpreted in the primitive's color space; displaced pixels are
-/// copied unchanged. Samples round to the nearest pixel, and samples outside the
-/// input's `bounds` are transparent.
+/// Displace `pixels` (the `in` image) by unpremultiplied channels of `map`, both in
+/// the primitive's color space. Like Chrome, the displaced image is read from its
+/// 8-bit working surface. Samples round to the nearest pixel, and samples outside
+/// the input's `bounds` are transparent.
 pub(super) fn apply(
     pixels: &mut Pixmap,
     map: &Pixmap,
@@ -28,13 +29,13 @@ pub(super) fn apply(
     if width == 0 {
         return;
     }
-    let source = pixels.clone();
+    let source: Vec<PremulRgba8> = pixels.data().iter().map(|p| to_space(*p, space)).collect();
     for (index, (pixel, displacement)) in pixels.data_mut().iter_mut().zip(map.data()).enumerate() {
         let map = straight(*displacement, space);
         let offset = |channel| f64::from(scale) * (f64::from(map[component(channel)]) - 0.5);
         let x = (index % width) as f64 + offset(channels[0]);
         let y = (index / width) as f64 + offset(channels[1]);
-        *pixel = sample(&source, width, bounds, x, y);
+        *pixel = from_space(sample(&source, width, bounds, x, y), space);
     }
     pixels.recompute_may_have_transparency();
 }
@@ -52,18 +53,18 @@ fn component(channel: ColorChannel) -> usize {
     clippy::cast_possible_truncation,
     reason = "Coordinates are finite and saturate to values outside the bounds."
 )]
-fn sample(source: &Pixmap, width: usize, bounds: PixelBounds, x: f64, y: f64) -> PremulRgba8 {
-    let transparent = PremulRgba8 {
-        r: 0,
-        g: 0,
-        b: 0,
-        a: 0,
-    };
+fn sample(
+    source: &[PremulRgba8],
+    width: usize,
+    bounds: PixelBounds,
+    x: f64,
+    y: f64,
+) -> PremulRgba8 {
     let x = bounds.extend_x((x + 0.5).floor() as i64, EdgeMode::None);
     let y = bounds.extend_y((y + 0.5).floor() as i64, EdgeMode::None);
     match (x, y) {
-        (Some(x), Some(y)) => source.data()[y * width + x],
-        _ => transparent,
+        (Some(x), Some(y)) => source[y * width + x],
+        _ => TRANSPARENT,
     }
 }
 
@@ -107,11 +108,7 @@ mod tests {
         apply(&mut pixels, &map, 4.0, channels, bounds, ColorSpace::Srgb);
         // Each output reads two pixels to its left; the first ones read outside.
         assert_eq!(
-            pixels
-                .data()
-                .iter()
-                .map(|p| p.r)
-                .collect::<alloc::vec::Vec<_>>(),
+            pixels.data().iter().map(|p| p.r).collect::<Vec<_>>(),
             [0, 0, 0, 9]
         );
     }

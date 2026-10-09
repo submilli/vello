@@ -3,17 +3,17 @@
 //! SVG `feMorphology` with a radius-independent sliding window.
 //!
 //! See: <https://drafts.fxtf.org/filter-effects/#feMorphologyElement>
+use super::bounds::for_each_column;
 use super::channels::{store, working};
-use alloc::vec;
 use alloc::vec::Vec;
-use vello_common::filter::graph::ColorSpace;
+use vello_common::filter::graph::{ColorSpace, MAX_MORPHOLOGY_RADIUS};
 use vello_common::filter_effects::MorphologyOperator;
 #[cfg(not(feature = "std"))]
 use vello_common::kurbo::common::FloatFuncs as _;
 use vello_common::pixmap::Pixmap;
 
 /// Erode or dilate premultiplied channels over a `(2rx+1) x (2ry+1)` rectangle.
-/// Radii round half away from zero and are capped at [`MAX_RADIUS`], as in Chrome;
+/// Radii round half away from zero and are capped at [`MAX_MORPHOLOGY_RADIUS`], as in Chrome;
 /// pixels beyond the raster are transparent black. A zero radius leaves that axis
 /// unchanged.
 pub(super) fn apply(
@@ -39,22 +39,10 @@ pub(super) fn apply(
         }
     }
     if ry > 0 {
-        let mut column = vec![[0.0; 4]; height];
-        for x in 0..width {
-            for (y, value) in column.iter_mut().enumerate() {
-                *value = data[y * width + x];
-            }
-            line.apply(&mut column, ry, dilate);
-            for (y, value) in column.iter().enumerate() {
-                data[y * width + x] = *value;
-            }
-        }
+        for_each_column(&mut data, width, |column| line.apply(column, ry, dilate));
     }
     store(pixels, &data, space);
 }
-
-/// Chrome limits morphology radii to keep draws fast (crbug.com/1123035).
-const MAX_RADIUS: usize = 256;
 
 #[expect(
     clippy::cast_possible_truncation,
@@ -63,7 +51,7 @@ const MAX_RADIUS: usize = 256;
 )]
 fn window_radius(radius: f32, extent: usize) -> usize {
     (radius.max(0.0).round() as usize)
-        .min(MAX_RADIUS)
+        .min(MAX_MORPHOLOGY_RADIUS as usize)
         .min(extent)
 }
 
@@ -117,6 +105,7 @@ impl Window {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use vello_common::color::PremulRgba8;
 
     fn row(alpha: &[u8]) -> Pixmap {

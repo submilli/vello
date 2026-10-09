@@ -1,6 +1,7 @@
 // Copyright 2026 the Vello Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Pixel rectangles of graph inputs, which neighborhood primitives extend.
+use alloc::vec::Vec;
 use vello_common::filter_effects::EdgeMode;
 #[cfg(not(feature = "std"))]
 use vello_common::kurbo::common::FloatFuncs as _;
@@ -51,6 +52,27 @@ impl PixelBounds {
 
     pub(super) fn extend_y(&self, y: i64, edge: EdgeMode) -> Option<usize> {
         extend(y, self.y0, self.y1, edge)
+    }
+}
+
+/// Apply `pass` to every column of a row-major raster `width` pixels wide.
+pub(super) fn for_each_column<T: Copy>(
+    data: &mut [T],
+    width: usize,
+    mut pass: impl FnMut(&mut [T]),
+) {
+    if width == 0 || data.is_empty() {
+        return;
+    }
+    let height = data.len() / width;
+    let mut column = Vec::with_capacity(height);
+    for x in 0..width {
+        column.clear();
+        column.extend((0..height).map(|y| data[y * width + x]));
+        pass(&mut column);
+        for (y, value) in column.iter().enumerate() {
+            data[y * width + x] = *value;
+        }
     }
 }
 

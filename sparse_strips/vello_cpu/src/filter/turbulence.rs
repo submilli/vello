@@ -145,7 +145,7 @@ impl Lattice {
                 } else {
                     (gx, gy)
                 };
-                *vector = [quantize(gx), quantize(gy)];
+                *vector = [stored_gradient(gx), stored_gradient(gy)];
             }
         }
         Self { selector, gradient }
@@ -226,7 +226,7 @@ impl Lattice {
     clippy::cast_sign_loss,
     reason = "Normalized components map into the u16 range."
 )]
-fn quantize(component: f32) -> f32 {
+fn stored_gradient(component: f32) -> f32 {
     let stored = ((component + 1.0) * 32767.5).round().clamp(0.0, 65535.0) as u16;
     f32::from(stored) * (2.0 / 65535.0) - 1.0
 }
