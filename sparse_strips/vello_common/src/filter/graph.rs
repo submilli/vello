@@ -148,12 +148,6 @@ impl SvgGraph {
         if area > Self::max_admitted_area(self.nodes.len()) {
             return Err(GraphError::Memory);
         }
-        let total = area
-            .checked_mul(self.nodes.len() + FIXED_SURFACES)
-            .ok_or(GraphError::Memory)?;
-        if total > MAX_INTERMEDIATE_PIXELS {
-            return Err(GraphError::Memory);
-        }
         let work: u64 = self
             .nodes
             .iter()
