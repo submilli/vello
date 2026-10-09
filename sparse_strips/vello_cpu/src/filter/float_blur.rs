@@ -10,42 +10,42 @@ use vello_common::filter_effects::EdgeMode;
 
 type Pixel = [f32; 4];
 
-pub(super) fn blur(data: &mut Vec<Pixel>, width: usize, height: usize, plan: &GaussianBlur) {
-    if width == 0 || height == 0 || plan.std_deviation <= 0.0 {
+/// Blur each axis with its own plan. Separable passes commute, so blurring rows and then
+/// columns equals the joint pyramid used by the integer renderer.
+pub(super) fn blur(
+    data: &mut Vec<Pixel>,
+    width: usize,
+    height: usize,
+    horizontal: &GaussianBlur,
+    vertical: &GaussianBlur,
+) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    blur_axis(data, width, height, horizontal, true);
+    blur_axis(data, width, height, vertical, false);
+}
+
+fn blur_axis(data: &mut Vec<Pixel>, width: usize, height: usize, plan: &GaussianBlur, x: bool) {
+    if plan.std_deviation <= 0.0 {
         return;
     }
     let mut dimensions = Vec::with_capacity(plan.n_decimations);
     let (mut w, mut h) = (width, height);
     for _ in 0..plan.n_decimations {
         dimensions.push((w, h));
-        let next_w = w.div_ceil(2);
-        let next_h = h.div_ceil(2);
-        let horizontal = downsample(data, w, h, next_w, h, true, plan.edge_mode);
-        *data = downsample(
-            &horizontal,
-            next_w,
-            h,
-            next_w,
-            next_h,
-            false,
-            plan.edge_mode,
-        );
+        let (next_w, next_h) = if x {
+            (w.div_ceil(2), h)
+        } else {
+            (w, h.div_ceil(2))
+        };
+        *data = downsample(data, w, h, next_w, next_h, x, plan.edge_mode);
         (w, h) = (next_w, next_h);
     }
     let kernel = &plan.kernel[..usize::from(plan.kernel_size)];
-    let horizontal = convolve(data, w, h, kernel, true, plan.edge_mode);
-    *data = convolve(&horizontal, w, h, kernel, false, plan.edge_mode);
+    *data = convolve(data, w, h, kernel, x, plan.edge_mode);
     while let Some((next_w, next_h)) = dimensions.pop() {
-        let horizontal = upsample(data, w, h, next_w, h, true, plan.edge_mode);
-        *data = upsample(
-            &horizontal,
-            next_w,
-            h,
-            next_w,
-            next_h,
-            false,
-            plan.edge_mode,
-        );
+        *data = upsample(data, w, h, next_w, next_h, x, plan.edge_mode);
         (w, h) = (next_w, next_h);
     }
 }
@@ -187,7 +187,14 @@ mod tests {
     #[test]
     fn mirror_samples_repeat_edges_without_clamping_away_reflection() {
         let data = [[0.0; 4], [0.25; 4], [1.0; 4]];
-        for (x, expected) in [(-3, 1.0), (-2, 0.25), (-1, 0.0), (3, 1.0), (4, 0.25), (5, 0.0)] {
+        for (x, expected) in [
+            (-3, 1.0),
+            (-2, 0.25),
+            (-1, 0.0),
+            (3, 1.0),
+            (4, 0.25),
+            (5, 0.0),
+        ] {
             assert_eq!(sample(&data, 3, 1, x, 0, EdgeMode::Mirror), [expected; 4]);
         }
     }

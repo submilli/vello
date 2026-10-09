@@ -53,6 +53,8 @@ use crate::color::{AlphaColor, Srgb};
 use crate::kurbo::{Affine, Rect, Vec2};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use peniko::kurbo::common::FloatFuncs as _;
 use smallvec::SmallVec;
 
 /// The main filter system.
@@ -492,40 +494,48 @@ pub enum FilterPrimitive {
     },
     /// Morphological operations (dilate/erode).
     ///
-    /// Expands (dilate) or contracts (erode) the shapes in the input image.
-    /// Useful for creating outline effects or cleaning up edges.
+    /// Takes the per-channel minimum (erode) or maximum (dilate) of premultiplied
+    /// pixels over a `2 * radius + 1` rectangle.
+    ///
+    /// See: <https://drafts.fxtf.org/filter-effects/#feMorphologyElement>
     Morphology {
         /// Morphological operator determining whether to erode or dilate.
         operator: MorphologyOperator,
-        /// Operation radius in pixels. Larger values create stronger effects.
-        radius: f32,
+        /// Horizontal radius in pixels.
+        radius_x: f32,
+        /// Vertical radius in pixels.
+        radius_y: f32,
     },
     /// Custom convolution kernel for image processing.
     ///
-    /// Applies a custom convolution matrix to the input image, enabling
-    /// effects like sharpening, edge detection, embossing, and custom filters.
+    /// See: <https://drafts.fxtf.org/filter-effects/#feConvolveMatrixElement>
     ConvolveMatrix {
         /// Convolution kernel specification including size, values, and normalization.
         kernel: ConvolutionKernel,
     },
-    /// Generate Perlin noise/turbulence patterns.
+    /// Generate Perlin noise/turbulence patterns over the primitive region.
     ///
-    /// Creates procedural noise patterns useful for textures, clouds,
-    /// marble effects, and other organic-looking randomness.
+    /// Noise is a function of absolute filter coordinates, so the same graph
+    /// produces the same pattern wherever the raster origin lies.
+    ///
+    /// See: <https://drafts.fxtf.org/filter-effects/#feTurbulenceElement>
     Turbulence {
-        /// Base frequency for noise generation. Higher values create finer detail.
-        base_frequency: f32,
+        /// Horizontal base frequency. Must be non-negative.
+        base_frequency_x: f32,
+        /// Vertical base frequency. Must be non-negative.
+        base_frequency_y: f32,
         /// Number of octaves for fractal noise. More octaves add finer detail.
         num_octaves: u32,
-        /// Random seed for reproducible noise generation.
-        seed: u32,
+        /// Seed for the lattice; the reference algorithm rounds and clamps it.
+        seed: f32,
+        /// Adjust frequencies so that the noise tiles at the primitive region.
+        stitch_tiles: bool,
         /// Type of noise: smooth fractal or more chaotic turbulence.
         turbulence_type: TurbulenceType,
     },
-    /// Displace pixels using a displacement map.
+    /// Displace the first input using channels of the second input as a map.
     ///
-    /// Uses the color values from a second input to spatially displace pixels
-    /// in the primary input, creating warping and distortion effects.
+    /// See: <https://drafts.fxtf.org/filter-effects/#feDisplacementMapElement>
     DisplacementMap {
         /// Scale factor controlling the displacement intensity.
         scale: f32,
@@ -559,29 +569,26 @@ pub enum FilterPrimitive {
         /// Transforms the image before using it as filter input.
         transform: Option<[f32; 6]>,
     },
-    /// Tile the input to fill the filter region.
+    /// Tile the input's primitive region across this primitive's region.
     ///
-    /// Repeats the input image to fill the entire filter primitive subregion,
-    /// creating a tiling/repeating pattern.
+    /// See: <https://drafts.fxtf.org/filter-effects/#feTileElement>
     Tile,
-    /// Diffuse lighting simulation.
+    /// Diffuse lighting of the input alpha channel as a height map.
     ///
-    /// Creates a lighting effect by treating the input's alpha channel as a height map
-    /// and calculating diffuse (matte) reflection from a light source.
+    /// See: <https://drafts.fxtf.org/filter-effects/#feDiffuseLightingElement>
     DiffuseLighting {
         /// Surface scale factor for converting alpha values to heights.
         surface_scale: f32,
         /// Diffuse reflection constant (kd). Controls lighting intensity.
         diffuse_constant: f32,
-        /// Kernel unit length for gradient calculations in user space.
-        kernel_unit_length: f32,
-        /// Configuration of the light source (point, distant, or spot).
+        /// Light color, converted to the primitive's working color space.
+        color: AlphaColor<Srgb>,
+        /// Light source in filter coordinates.
         light_source: LightSource,
     },
-    /// Specular lighting simulation.
+    /// Specular lighting of the input alpha channel as a height map.
     ///
-    /// Creates a lighting effect by treating the input's alpha channel as a height map
-    /// and calculating specular (shiny) reflection highlights from a light source.
+    /// See: <https://drafts.fxtf.org/filter-effects/#feSpecularLightingElement>
     SpecularLighting {
         /// Surface scale factor for converting alpha values to heights.
         surface_scale: f32,
@@ -589,10 +596,36 @@ pub enum FilterPrimitive {
         specular_constant: f32,
         /// Specular reflection exponent. Controls highlight sharpness (higher = sharper).
         specular_exponent: f32,
-        /// Kernel unit length for gradient calculations in user space.
-        kernel_unit_length: f32,
-        /// Configuration of the light source (point, distant, or spot).
+        /// Light color, converted to the primitive's working color space.
+        color: AlphaColor<Srgb>,
+        /// Light source in filter coordinates.
         light_source: LightSource,
+    },
+    /// Gaussian blur with independent horizontal and vertical deviations.
+    ///
+    /// See: <https://drafts.fxtf.org/filter-effects/#feGaussianBlurElement>
+    AxisGaussianBlur {
+        /// Horizontal standard deviation. Zero leaves rows unblurred.
+        std_deviation_x: f32,
+        /// Vertical standard deviation. Zero leaves columns unblurred.
+        std_deviation_y: f32,
+        /// Edge mode determining how pixels beyond the input bounds are handled.
+        edge_mode: EdgeMode,
+    },
+    /// Drop shadow whose blur has independent horizontal and vertical deviations.
+    ///
+    /// See: <https://drafts.fxtf.org/filter-effects/#feDropShadowElement>
+    AxisDropShadow {
+        /// Horizontal offset of the shadow in pixels. Positive values shift right.
+        dx: f32,
+        /// Vertical offset of the shadow in pixels. Positive values shift down.
+        dy: f32,
+        /// Horizontal blur standard deviation.
+        std_deviation_x: f32,
+        /// Vertical blur standard deviation.
+        std_deviation_y: f32,
+        /// Shadow color with alpha channel.
+        color: AlphaColor<Srgb>,
     },
 }
 
@@ -633,6 +666,49 @@ impl FilterPrimitive {
                     (dy + blur_radius).max(0.0),
                 )
             }
+            Self::AxisGaussianBlur {
+                std_deviation_x,
+                std_deviation_y,
+                ..
+            } => {
+                let x = blur_radius(*std_deviation_x);
+                let y = blur_radius(*std_deviation_y);
+                Rect::new(-x, -y, x, y)
+            }
+            Self::AxisDropShadow {
+                dx,
+                dy,
+                std_deviation_x,
+                std_deviation_y,
+                ..
+            } => shadow_expansion(
+                f64::from(*dx),
+                f64::from(*dy),
+                blur_radius(*std_deviation_x),
+                blur_radius(*std_deviation_y),
+            ),
+            // Erosion reads the same neighborhood that dilation writes; radii are
+            // capped at 256 pixels.
+            Self::Morphology {
+                radius_x, radius_y, ..
+            } => {
+                let x = f64::from(radius_x.max(0.0)).round().min(256.0);
+                let y = f64::from(radius_y.max(0.0)).round().min(256.0);
+                Rect::new(-x, -y, x, y)
+            }
+            Self::ConvolveMatrix { kernel } => {
+                let x = f64::from(kernel.columns);
+                let y = f64::from(kernel.rows);
+                Rect::new(-x, -y, x, y)
+            }
+            Self::DisplacementMap { scale, .. } => {
+                let reach = (f64::from(*scale).abs() / 2.0).ceil();
+                Rect::new(-reach, -reach, reach, reach)
+            }
+            // Surface normals read one neighboring pixel.
+            Self::DiffuseLighting { .. } | Self::SpecularLighting { .. } => {
+                Rect::new(-1.0, -1.0, 1.0, 1.0)
+            }
             // Most other filters don't expand bounds
             _ => Rect::ZERO,
         }
@@ -667,9 +743,30 @@ impl FilterPrimitive {
                     (dy + blur_radius).max(0.0),
                 )
             }
+            Self::AxisDropShadow {
+                dx,
+                dy,
+                std_deviation_x,
+                std_deviation_y,
+                ..
+            } => shadow_expansion(
+                -f64::from(*dx),
+                -f64::from(*dy),
+                blur_radius(*std_deviation_x),
+                blur_radius(*std_deviation_y),
+            ),
             _ => self.filter_expansion(),
         }
     }
+}
+
+fn shadow_expansion(dx: f64, dy: f64, x: f64, y: f64) -> Rect {
+    Rect::new(
+        (dx - x).min(0.0),
+        (dy - y).min(0.0),
+        (dx + x).max(0.0),
+        (dy + y).max(0.0),
+    )
 }
 
 fn blur_radius(std_deviation: f32) -> f64 {
@@ -928,25 +1025,28 @@ pub enum MorphologyOperator {
 
 /// Convolution kernel for custom filtering operations.
 ///
-/// Defines a square matrix of weights used for convolution-based image processing.
-/// The kernel is applied to each pixel by multiplying surrounding pixels by the weights,
-/// summing the results, dividing by the divisor, and adding the bias.
+/// Each output pixel sums the weighted neighbors addressed by the kernel, divides by
+/// `divisor` and adds `bias`. As in SVG, the kernel is applied rotated by 180 degrees
+/// relative to the row-major `values`, with `target` locating the output pixel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConvolutionKernel {
-    /// Kernel size (e.g., 3 for a 3×3 kernel, 5 for 5×5).
-    /// The kernel must be square, so this defines both width and height.
-    pub size: u32,
-    /// Kernel weight values in row-major order.
-    /// Length must equal size × size. Center of kernel is typically at (size/2, size/2).
+    /// Kernel width in pixels.
+    pub columns: u32,
+    /// Kernel height in pixels.
+    pub rows: u32,
+    /// Kernel weight values in row-major order; length is `columns * rows`.
     pub values: Vec<f32>,
-    /// Normalization divisor applied to the convolution result.
-    /// Common practice is to use the sum of all weights for averaging, or 1.0 otherwise.
+    /// Column of the kernel aligned with the output pixel.
+    pub target_x: u32,
+    /// Row of the kernel aligned with the output pixel.
+    pub target_y: u32,
+    /// Normalization divisor applied to the convolution result. Must be nonzero.
     pub divisor: f32,
     /// Bias value added to the result after normalization.
-    /// Useful for edge detection or emboss effects to shift the result range.
     pub bias: f32,
-    /// Whether to preserve the alpha channel unchanged.
-    /// If true, convolution only applies to RGB; if false, it applies to RGBA.
+    /// How samples outside the input are produced.
+    pub edge_mode: EdgeMode,
+    /// Convolve unpremultiplied color and keep the input alpha unchanged.
     pub preserve_alpha: bool,
 }
 
@@ -1133,16 +1233,20 @@ pub mod matrices {
 /// These kernels are used with the `ConvolveMatrix` filter primitive
 /// for various image processing effects. All provided kernels are 3x3.
 pub mod kernels {
-    use super::ConvolutionKernel;
+    use super::{ConvolutionKernel, EdgeMode};
     use alloc::vec;
 
     /// 3x3 Gaussian blur kernel for basic smoothing.
     pub fn gaussian_3x3() -> ConvolutionKernel {
         ConvolutionKernel {
-            size: 3,
+            columns: 3,
+            rows: 3,
             values: vec![1.0, 2.0, 1.0, 2.0, 4.0, 2.0, 1.0, 2.0, 1.0],
+            target_x: 1,
+            target_y: 1,
             divisor: 16.0,
             bias: 0.0,
+            edge_mode: EdgeMode::Duplicate,
             preserve_alpha: false,
         }
     }
@@ -1150,10 +1254,14 @@ pub mod kernels {
     /// 3x3 Sharpen kernel to enhance edges and details.
     pub fn sharpen_3x3() -> ConvolutionKernel {
         ConvolutionKernel {
-            size: 3,
+            columns: 3,
+            rows: 3,
             values: vec![0.0, -1.0, 0.0, -1.0, 5.0, -1.0, 0.0, -1.0, 0.0],
+            target_x: 1,
+            target_y: 1,
             divisor: 1.0,
             bias: 0.0,
+            edge_mode: EdgeMode::Duplicate,
             preserve_alpha: true,
         }
     }
@@ -1161,10 +1269,14 @@ pub mod kernels {
     /// 3x3 Edge detection kernel (Laplacian operator).
     pub fn edge_detect_3x3() -> ConvolutionKernel {
         ConvolutionKernel {
-            size: 3,
+            columns: 3,
+            rows: 3,
             values: vec![-1.0, -1.0, -1.0, -1.0, 8.0, -1.0, -1.0, -1.0, -1.0],
+            target_x: 1,
+            target_y: 1,
             divisor: 1.0,
             bias: 0.0,
+            edge_mode: EdgeMode::Duplicate,
             preserve_alpha: true,
         }
     }
@@ -1172,10 +1284,14 @@ pub mod kernels {
     /// 3x3 Emboss kernel for creating a raised/beveled appearance.
     pub fn emboss_3x3() -> ConvolutionKernel {
         ConvolutionKernel {
-            size: 3,
+            columns: 3,
+            rows: 3,
             values: vec![-2.0, -1.0, 0.0, -1.0, 1.0, 1.0, 0.0, 1.0, 2.0],
+            target_x: 1,
+            target_y: 1,
             divisor: 1.0,
             bias: 0.5,
+            edge_mode: EdgeMode::Duplicate,
             preserve_alpha: true,
         }
     }

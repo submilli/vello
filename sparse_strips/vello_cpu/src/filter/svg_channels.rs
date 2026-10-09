@@ -1,12 +1,11 @@
 // Copyright 2026 the Vello Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-//! SVG component transfer and separable blend operations.
+//! SVG component transfer.
 use super::channels::{encode, straight};
 use vello_common::filter::graph::ColorSpace;
 use vello_common::filter_effects::TransferFunction;
 #[cfg(not(feature = "std"))]
 use vello_common::kurbo::common::FloatFuncs as _;
-use vello_common::peniko::Mix;
 use vello_common::pixmap::Pixmap;
 
 pub(super) fn transfer(
@@ -51,31 +50,4 @@ fn evaluate(function: &TransferFunction, value: f32) -> f32 {
             values[((value.clamp(0.0, 1.0) * values.len() as f32) as usize).min(values.len() - 1)]
         }
     }
-}
-
-pub(super) fn blend(pixels: &mut Pixmap, other: &Pixmap, mode: Mix, space: ColorSpace) {
-    for (pixel, other) in pixels.data_mut().iter_mut().zip(other.data()) {
-        let s = straight(*pixel, space);
-        let d = straight(*other, space);
-        let alpha = s[3] + d[3] - s[3] * d[3];
-        let mut output = [0.0, 0.0, 0.0, alpha];
-        for i in 0..3 {
-            let mixed = match mode {
-                Mix::Normal => s[i],
-                Mix::Multiply => s[i] * d[i],
-                Mix::Screen => s[i] + d[i] - s[i] * d[i],
-                Mix::Darken => s[i].min(d[i]),
-                Mix::Lighten => s[i].max(d[i]),
-                _ => s[i], // Admission restricts separable modes before execution.
-            };
-            output[i] = if alpha > 0.0 {
-                ((1.0 - d[3]) * s[3] * s[i] + (1.0 - s[3]) * d[3] * d[i] + s[3] * d[3] * mixed)
-                    / alpha
-            } else {
-                0.0
-            };
-        }
-        *pixel = encode(output, space);
-    }
-    pixels.recompute_may_have_transparency();
 }

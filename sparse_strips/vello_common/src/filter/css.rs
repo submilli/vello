@@ -85,7 +85,18 @@ fn saturation(amount: f32) -> [f32; 20] {
     matrix
 }
 
-pub(crate) use super::parameters::valid_unary_parameters as supported;
+/// Primitives the sequential CPU chain executes, with admitted parameters.
+pub(crate) fn supported(primitive: &FilterPrimitive) -> bool {
+    matches!(
+        primitive,
+        FilterPrimitive::ColorMatrix { .. }
+            | FilterPrimitive::GaussianBlur { .. }
+            | FilterPrimitive::DropShadow { .. }
+            | FilterPrimitive::DropShadowOnly { .. }
+            | FilterPrimitive::Offset { .. }
+            | FilterPrimitive::Flood { .. }
+    ) && super::parameters::valid(primitive)
+}
 
 #[cfg(test)]
 mod tests {

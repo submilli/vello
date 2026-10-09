@@ -6,14 +6,16 @@
 use alloc::vec::Vec;
 use vello_common::color::PremulRgba8;
 use vello_common::filter::graph::{ColorSpace, GraphError, Input, SvgGraph};
-use vello_common::filter_effects::{CompositeOperator, Filter, FilterPrimitive};
+use vello_common::filter_effects::CompositeOperator;
 #[cfg(not(feature = "std"))]
 use vello_common::kurbo::common::FloatFuncs as _;
-use vello_common::kurbo::{Affine, Point, Rect};
+use vello_common::kurbo::{Point, Rect};
 use vello_common::pixmap::Pixmap;
 
-use super::channels::{encode, straight};
-use super::{context::ScratchBuffer, filter_lowp};
+use super::bounds::PixelBounds;
+use super::channels::{encode_stored, straight};
+use super::context::ScratchBuffer;
+use super::svg_node::Context;
 
 /// Execute an admitted SVG graph without changing `pixels` on admission failure.
 /// `origin` locates the first pixel in the resolved graph coordinate space. The
@@ -29,69 +31,44 @@ pub fn apply_svg_graph(
         return Err(GraphError::Parameter);
     }
     let source = pixels.clone();
-    let mut results = Vec::with_capacity(graph.nodes().len());
+    let mut results: Vec<Pixmap> = Vec::with_capacity(graph.nodes().len());
     let mut scratch = ScratchBuffer::default();
+    let (width, height) = (pixels.width(), pixels.height());
+    let bounds = |region: Rect| PixelBounds::of(region, origin, width, height);
     for node in graph.nodes() {
         let mut output = input(node.input, &source, &results);
-        match &node.primitive {
-            FilterPrimitive::ColorMatrix { matrix } => {
-                super::color_matrix::apply_in_space(&mut output, matrix, node.color_space);
-            }
-            FilterPrimitive::Flood { color } => {
-                output
-                    .data_mut()
-                    .fill(encode(color.components, ColorSpace::Srgb));
-                output.recompute_may_have_transparency();
-            }
-            FilterPrimitive::Composite { operator } => {
-                // The immutable graph constructor establishes binary arity.
-                let secondary = node.input2.ok_or(GraphError::Input)?;
-                let other = input(secondary, &source, &results);
-                composite(&mut output, &other, *operator, node.color_space);
-            }
-            FilterPrimitive::ComponentTransfer {
-                red_function,
-                green_function,
-                blue_function,
-                alpha_function,
-            } => {
-                super::svg_channels::transfer(
-                    &mut output,
-                    [red_function, green_function, blue_function, alpha_function],
-                    node.color_space,
-                );
-            }
-            FilterPrimitive::Blend { mode } => {
-                let other = input(node.input2.ok_or(GraphError::Input)?, &source, &results);
-                super::svg_channels::blend(&mut output, &other, *mode, node.color_space);
-            }
-            FilterPrimitive::GaussianBlur {
-                std_deviation,
-                edge_mode,
-            } if node.color_space == ColorSpace::LinearRgb => {
-                super::linear_effects::blur(&mut output, *std_deviation, *edge_mode);
-            }
-            FilterPrimitive::DropShadow { .. } | FilterPrimitive::DropShadowOnly { .. }
-                if node.color_space == ColorSpace::LinearRgb =>
-            {
-                super::linear_effects::shadow(&mut output, &node.primitive, &mut scratch);
-            }
-            primitive => {
-                filter_lowp(
-                    &Filter::from_primitive(primitive.clone()),
-                    &mut output,
-                    &mut scratch,
-                    Affine::IDENTITY,
-                );
-            }
-        }
-        clip(&mut output, node.region.intersect(graph.region()), origin);
+        let other = node.input2.map(|other| input(other, &source, &results));
+        let region = node.region.intersect(graph.region());
+        let context = Context {
+            region,
+            crop: bounds(region),
+            input: bounds(input_region(graph, node.input)),
+            origin,
+            space: node.color_space,
+        };
+        super::svg_node::execute(
+            &node.primitive,
+            &mut output,
+            other.as_ref(),
+            &context,
+            &mut scratch,
+        );
+        clip(&mut output, context.region, origin);
         results.push(output);
     }
     // The output index was checked before this execution began.
     let output = results.swap_remove(graph.output());
     *pixels = output;
     Ok(())
+}
+
+/// Where an input's content lies: the source's content or an earlier node's region.
+fn input_region(graph: &SvgGraph, input: Input) -> Rect {
+    let region = match input {
+        Input::SourceGraphic | Input::SourceAlpha => graph.source_region(),
+        Input::Result(index) => graph.nodes()[index].region,
+    };
+    region.intersect(graph.region())
 }
 
 fn input(input: Input, source: &Pixmap, results: &[Pixmap]) -> Pixmap {
@@ -147,7 +124,7 @@ pub(super) fn composite(
                 0.0
             };
         }
-        *p = encode(out, space);
+        *p = encode_stored(out, space);
     }
     pixels.recompute_may_have_transparency();
 }
@@ -192,6 +169,7 @@ fn clip(pixels: &mut Pixmap, region: Rect, origin: Point) {
 mod tests {
     use super::*;
     use vello_common::filter::graph::Node;
+    use vello_common::filter_effects::FilterPrimitive;
     use vello_common::filter_effects::matrices;
     fn node(matrix: [f32; 20], input: Input) -> Node {
         Node {
@@ -242,58 +220,80 @@ mod tests {
         }
     }
     #[test]
-    fn linear_blur_preserves_dark_values_and_uses_linear_light() {
-        use vello_common::filter_effects::EdgeMode;
-        let mut n = node(matrices::IDENTITY, Input::SourceGraphic);
-        n.color_space = ColorSpace::LinearRgb;
-        n.primitive = FilterPrimitive::GaussianBlur {
-            std_deviation: 1.0,
-            edge_mode: EdgeMode::Wrap,
+    fn linear_surfaces_round_dark_values_like_chrome_but_color_filters_do_not() {
+        // Chrome 154: a linearRGB blur stores 8-bit linear pixels, while a color
+        // matrix converts in float. Gray levels 3, 6, 12 and 20 come back as below.
+        let mut blur = node(matrices::IDENTITY, Input::SourceGraphic);
+        blur.color_space = ColorSpace::LinearRgb;
+        blur.primitive = FilterPrimitive::GaussianBlur {
+            std_deviation: 0.5,
+            edge_mode: vello_common::filter_effects::EdgeMode::None,
         };
-        let graph = SvgGraph::new([n], Rect::new(0.0, 0.0, 2.0, 1.0), 0).unwrap();
-        let mut pixels = Pixmap::new(2, 1);
-        pixels.data_mut().fill(PremulRgba8 {
-            r: 6,
-            g: 6,
-            b: 6,
-            a: 255,
-        });
-        apply_svg_graph(&graph, &mut pixels, Point::ORIGIN).unwrap();
-        assert_eq!(pixels.data()[0].r, 6);
-        pixels.data_mut()[0] = PremulRgba8 {
-            r: 0,
-            g: 0,
-            b: 0,
-            a: 255,
-        };
-        pixels.data_mut()[1] = PremulRgba8 {
-            r: 255,
-            g: 255,
-            b: 255,
-            a: 255,
-        };
-        apply_svg_graph(&graph, &mut pixels, Point::ORIGIN).unwrap();
-        assert!((186..=189).contains(&pixels.data()[0].r));
-        assert!((186..=189).contains(&pixels.data()[1].r));
+        let mut matrix = node(matrices::IDENTITY, Input::SourceGraphic);
+        matrix.color_space = ColorSpace::LinearRgb;
+        for (primitive, expected) in [(blur, [0, 0, 13, 22]), (matrix, [3, 6, 12, 20])] {
+            let graph = SvgGraph::new([primitive], Rect::new(0.0, 0.0, 4.0, 1.0), 0).unwrap();
+            for (gray, expected) in [3, 6, 12, 20].into_iter().zip(expected) {
+                let mut pixels = Pixmap::new(4, 1);
+                pixels.data_mut().fill(PremulRgba8 {
+                    r: gray,
+                    g: gray,
+                    b: gray,
+                    a: 255,
+                });
+                apply_svg_graph(&graph, &mut pixels, Point::ORIGIN).unwrap();
+                assert_eq!(pixels.data()[1].r, expected, "{gray}");
+            }
+        }
     }
     #[test]
     fn linear_shadow_composites_in_linear_light_and_preserves_alpha_metadata() {
         use vello_common::filter_effects::EdgeMode;
         let mut n = node(matrices::IDENTITY, Input::SourceGraphic);
         n.color_space = ColorSpace::LinearRgb;
-        n.primitive = FilterPrimitive::DropShadow { dx: 0.0, dy: 0.0, std_deviation: 0.0, color: vello_common::color::palette::css::BLUE, edge_mode: EdgeMode::None };
+        n.primitive = FilterPrimitive::DropShadow {
+            dx: 0.0,
+            dy: 0.0,
+            std_deviation: 0.0,
+            color: vello_common::color::palette::css::BLUE,
+            edge_mode: EdgeMode::None,
+        };
         let graph = SvgGraph::new([n.clone()], Rect::new(0.0, 0.0, 1.0, 1.0), 0).unwrap();
         let mut pixels = Pixmap::new(1, 1);
-        pixels.data_mut()[0] = PremulRgba8 { r: 128, g: 0, b: 0, a: 128 };
+        pixels.data_mut()[0] = PremulRgba8 {
+            r: 128,
+            g: 0,
+            b: 0,
+            a: 128,
+        };
         apply_svg_graph(&graph, &mut pixels, Point::ORIGIN).unwrap();
         assert!((159..=161).contains(&pixels.data()[0].r));
         assert!((116..=118).contains(&pixels.data()[0].b));
         assert_eq!(pixels.data()[0].a, 192);
-        n.primitive = FilterPrimitive::DropShadowOnly { dx: 0.0, dy: 0.0, std_deviation: 0.0, color: vello_common::color::AlphaColor::new([0.0, 0.0, 1.0, 0.5]), edge_mode: EdgeMode::None };
+        n.primitive = FilterPrimitive::DropShadowOnly {
+            dx: 0.0,
+            dy: 0.0,
+            std_deviation: 0.0,
+            color: vello_common::color::AlphaColor::new([0.0, 0.0, 1.0, 0.5]),
+            edge_mode: EdgeMode::None,
+        };
         let graph = SvgGraph::new([n], Rect::new(0.0, 0.0, 1.0, 1.0), 0).unwrap();
-        pixels.data_mut()[0] = PremulRgba8 { r: 128, g: 0, b: 0, a: 128 };
+        pixels.data_mut()[0] = PremulRgba8 {
+            r: 128,
+            g: 0,
+            b: 0,
+            a: 128,
+        };
         apply_svg_graph(&graph, &mut pixels, Point::ORIGIN).unwrap();
-        assert_eq!(pixels.data()[0], PremulRgba8 { r: 0, g: 0, b: 64, a: 64 });
+        assert_eq!(
+            pixels.data()[0],
+            PremulRgba8 {
+                r: 0,
+                g: 0,
+                b: 64,
+                a: 64
+            }
+        );
         assert!(pixels.may_have_transparency());
     }
     #[test]
