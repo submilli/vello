@@ -12,6 +12,9 @@ use alloc::vec::Vec;
 pub const MAX_NODES: usize = 32;
 /// Aggregate pixels retained by a graph, including source and working storage.
 pub const MAX_INTERMEDIATE_PIXELS: usize = 16 * 1024 * 1024;
+/// Rasters admitted per graph besides one per node: the source, alpha extraction
+/// and float convolution scratch.
+pub const FIXED_SURFACES: usize = 16;
 /// Aggregate estimated per-pixel operations over a graph's raster, bounding
 /// neighborhood kernels and octave counts that pages control.
 pub const MAX_WORK: u64 = 1 << 28;
@@ -113,6 +116,11 @@ impl SvgGraph {
         Ok(self)
     }
 
+    /// The largest raster area `admit_pixels` accepts for a graph of `nodes` nodes.
+    pub fn max_admitted_area(nodes: usize) -> usize {
+        MAX_INTERMEDIATE_PIXELS / (nodes + FIXED_SURFACES)
+    }
+
     /// Immutable nodes in topological order.
     pub fn nodes(&self) -> &[Node] {
         &self.nodes
@@ -137,8 +145,11 @@ impl SvgGraph {
         let area = usize::from(width)
             .checked_mul(usize::from(height))
             .ok_or(GraphError::Memory)?;
+        if area > Self::max_admitted_area(self.nodes.len()) {
+            return Err(GraphError::Memory);
+        }
         let total = area
-            .checked_mul(self.nodes.len() + 16)
+            .checked_mul(self.nodes.len() + FIXED_SURFACES)
             .ok_or(GraphError::Memory)?;
         if total > MAX_INTERMEDIATE_PIXELS {
             return Err(GraphError::Memory);
