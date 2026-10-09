@@ -7,7 +7,7 @@ use super::bounds::PixelBounds;
 use super::channels::{premultiply, store, stored_straight, working};
 use alloc::vec;
 use alloc::vec::Vec;
-use vello_common::filter::graph::{ColorSpace, MAX_KERNEL_ENTRIES};
+use vello_common::filter::graph::ColorSpace;
 use vello_common::filter_effects::{ConvolutionKernel, EdgeMode};
 use vello_common::pixmap::Pixmap;
 
@@ -20,9 +20,8 @@ pub(super) fn apply(
     space: ColorSpace,
 ) {
     let width = usize::from(pixels.width());
-    let entries = u64::from(kernel.columns) * u64::from(kernel.rows);
     // Chrome ignores kernels larger than its bound and passes the input through.
-    if width == 0 || pixels.height() == 0 || entries > u64::from(MAX_KERNEL_ENTRIES) {
+    if width == 0 || pixels.height() == 0 || !kernel.executes() {
         return;
     }
     // With preserveAlpha, color is convolved unpremultiplied and alpha is kept.

@@ -1051,6 +1051,16 @@ pub struct ConvolutionKernel {
     pub preserve_alpha: bool,
 }
 
+impl ConvolutionKernel {
+    /// Whether the kernel convolves; like Chrome, a kernel with more than
+    /// [`MAX_KERNEL_ENTRIES`](crate::filter::graph::MAX_KERNEL_ENTRIES) entries
+    /// passes its input through instead.
+    pub fn executes(&self) -> bool {
+        u64::from(self.columns) * u64::from(self.rows)
+            <= u64::from(crate::filter::graph::MAX_KERNEL_ENTRIES)
+    }
+}
+
 /// Types of turbulence noise generation.
 ///
 /// Determines the algorithm used for generating procedural noise patterns.

@@ -140,15 +140,11 @@ pub(crate) fn cost(primitive: &FilterPrimitive) -> u64 {
         FilterPrimitive::Morphology { .. }
         | FilterPrimitive::DiffuseLighting { .. }
         | FilterPrimitive::SpecularLighting { .. } => 32,
-        FilterPrimitive::ConvolveMatrix { kernel } => {
-            let entries = u64::from(kernel.columns) * u64::from(kernel.rows);
-            // Oversized kernels pass their input through.
-            if entries > u64::from(MAX_KERNEL_ENTRIES) {
-                1
-            } else {
-                entries
-            }
+        FilterPrimitive::ConvolveMatrix { kernel } if kernel.executes() => {
+            u64::from(kernel.columns) * u64::from(kernel.rows)
         }
+        // Oversized kernels pass their input through.
+        FilterPrimitive::ConvolveMatrix { .. } => 1,
         FilterPrimitive::Turbulence { num_octaves, .. } => {
             16 * u64::from((*num_octaves).clamp(1, MAX_TURBULENCE_OCTAVES))
         }

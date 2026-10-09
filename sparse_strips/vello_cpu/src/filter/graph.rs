@@ -4,7 +4,6 @@
 //! Bounded SVG DAG execution over caller-supplied, already-rasterized source pixels.
 
 use alloc::vec::Vec;
-use vello_common::color::PremulRgba8;
 use vello_common::filter::graph::{GraphError, Input, SvgGraph};
 #[cfg(not(feature = "std"))]
 use vello_common::kurbo::common::FloatFuncs as _;
@@ -12,6 +11,7 @@ use vello_common::kurbo::{Point, Rect};
 use vello_common::pixmap::Pixmap;
 
 use super::bounds::PixelBounds;
+use super::channels::TRANSPARENT;
 use super::context::ScratchBuffer;
 use super::svg_node::Context;
 
@@ -87,12 +87,7 @@ fn input(input: Input, source: &Pixmap, results: &[Pixmap]) -> Pixmap {
 
 fn clip(pixels: &mut Pixmap, region: Rect, origin: Point) {
     if region.width() <= 0.0 || region.height() <= 0.0 {
-        pixels.data_mut().fill(PremulRgba8 {
-            r: 0,
-            g: 0,
-            b: 0,
-            a: 0,
-        });
+        pixels.data_mut().fill(TRANSPARENT);
         pixels.recompute_may_have_transparency();
         return;
     }
@@ -110,12 +105,7 @@ fn clip(pixels: &mut Pixmap, region: Rect, origin: Point) {
             || y < region.y0.floor()
             || y >= region.y1.ceil()
         {
-            *p = PremulRgba8 {
-                r: 0,
-                g: 0,
-                b: 0,
-                a: 0,
-            };
+            *p = TRANSPARENT;
         }
     }
     pixels.recompute_may_have_transparency();
@@ -124,6 +114,7 @@ fn clip(pixels: &mut Pixmap, region: Rect, origin: Point) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vello_common::color::PremulRgba8;
     use vello_common::filter::graph::ColorSpace;
     use vello_common::filter::graph::Node;
     use vello_common::filter_effects::matrices;
