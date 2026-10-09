@@ -18,6 +18,7 @@ pub const MAX_TURBULENCE_OCTAVES: u32 = 9;
 pub(crate) fn valid(primitive: &FilterPrimitive) -> bool {
     match primitive {
         FilterPrimitive::ColorMatrix { matrix } => matrix.iter().copied().all(finite),
+        // CSS chains pad their raster by the blur radius, so it stays bounded.
         FilterPrimitive::GaussianBlur { std_deviation, .. } => deviation(*std_deviation),
         // Work does not grow with these magnitudes: SVG blurs past the box range
         // are decimated, and SVG nodes are clipped to admitted regions.
