@@ -139,13 +139,16 @@ impl SvgGraph {
     }
 
     /// Conservatively admit source, all results, alpha extraction and float convolution scratch
-    /// surfaces, and the graph's total per-pixel work. Admission happens before allocations or
-    /// destination modification.
+    /// surfaces, the image inputs the graph retains, and its total per-pixel work. Admission
+    /// happens before allocations or destination modification.
     pub fn admit_pixels(&self, width: u16, height: u16) -> Result<(), GraphError> {
         let area = usize::from(width)
             .checked_mul(usize::from(height))
             .ok_or(GraphError::Memory)?;
-        if area > Self::max_admitted_area(self.nodes.len()) {
+        let surfaces = area
+            .checked_mul(self.nodes.len() + FIXED_SURFACES)
+            .ok_or(GraphError::Memory)?;
+        if surfaces.saturating_add(self.image_pixels()) > MAX_INTERMEDIATE_PIXELS {
             return Err(GraphError::Memory);
         }
         let work: u64 = self
@@ -166,16 +169,41 @@ impl SvgGraph {
     }
 }
 
-fn validate_region(rect: Rect) -> Result<(), GraphError> {
-    if ![rect.x0, rect.y0, rect.x1, rect.y1]
-        .into_iter()
-        .all(|v| v.is_finite() && v.abs() <= 1e6)
-        || rect.x1 < rect.x0
-        || rect.y1 < rect.y0
-    {
-        return Err(GraphError::Parameter);
+impl SvgGraph {
+    /// Pixels of the distinct image inputs, which the graph keeps alive.
+    fn image_pixels(&self) -> usize {
+        let mut total = 0_usize;
+        for (index, node) in self.nodes.iter().enumerate() {
+            let FilterPrimitive::Image { image, .. } = &node.primitive else {
+                continue;
+            };
+            let shared = self.nodes[..index].iter().any(|earlier| {
+                matches!(&earlier.primitive, FilterPrimitive::Image { image: other, .. } if other == image)
+            });
+            if !shared {
+                let pixmap = image.pixmap();
+                total = total
+                    .saturating_add(usize::from(pixmap.width()) * usize::from(pixmap.height()));
+            }
+        }
+        total
     }
-    Ok(())
+}
+
+/// Largest coordinate magnitude in a graph's regions and image placements.
+pub const MAX_COORDINATE: f64 = 1e6;
+
+fn validate_region(rect: Rect) -> Result<(), GraphError> {
+    valid_rect(rect).then_some(()).ok_or(GraphError::Parameter)
+}
+
+/// A finite, ordered rectangle within the graph's coordinate range.
+pub(crate) fn valid_rect(rect: Rect) -> bool {
+    [rect.x0, rect.y0, rect.x1, rect.y1]
+        .into_iter()
+        .all(|v| v.is_finite() && v.abs() <= MAX_COORDINATE)
+        && rect.x1 >= rect.x0
+        && rect.y1 >= rect.y0
 }
 
 fn valid_input(input: Input, before: usize) -> bool {
@@ -200,9 +228,6 @@ fn validate_node(node: &Node, before: usize) -> Result<(), GraphError> {
     );
     if binary != node.input2.is_some() {
         return Err(GraphError::Input);
-    }
-    if matches!(node.primitive, FilterPrimitive::Image { .. }) {
-        return Err(GraphError::Unsupported);
     }
     if !super::parameters::valid(&node.primitive) {
         return Err(GraphError::Parameter);
@@ -338,17 +363,41 @@ mod tests {
             SvgGraph::new([morphology(f32::NAN)], rect, 0),
             Err(GraphError::Parameter)
         );
-        let image = with(
-            FilterPrimitive::Image {
-                image_id: 0,
-                transform: None,
+    }
+
+    #[test]
+    fn image_inputs_admit_finite_placements_and_count_their_pixels() {
+        use crate::filter::image::FilterImage;
+        use crate::pixmap::Pixmap;
+        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let image = |side: u16, destination: Rect| Node {
+            primitive: FilterPrimitive::Image {
+                image: FilterImage::new(Pixmap::new(side, side)),
+                source: Rect::new(0.0, 0.0, f64::from(side), f64::from(side)),
+                destination,
             },
-            None,
-        );
-        assert_eq!(
-            SvgGraph::new([image], rect, 0),
-            Err(GraphError::Unsupported)
-        );
+            ..node(Input::SourceGraphic)
+        };
+        assert!(SvgGraph::new([image(4, rect)], rect, 0).is_ok());
+        for invalid in [
+            Rect::new(0.0, 0.0, f64::NAN, 1.0),
+            Rect::new(2.0, 0.0, 1.0, 1.0),
+            Rect::new(0.0, 0.0, 2e6, 1.0),
+        ] {
+            assert_eq!(
+                SvgGraph::new([image(4, invalid)], rect, 0),
+                Err(GraphError::Parameter)
+            );
+        }
+        // Image pixels share the intermediate budget; one image used twice counts once.
+        let large = image(3000, rect);
+        let graph = SvgGraph::new([large.clone(), large], rect, 1).unwrap();
+        assert!(graph.admit_pixels(64, 64).is_ok());
+        let area = SvgGraph::max_admitted_area(2) as f64;
+        let side = area.sqrt() as u16;
+        assert_eq!(graph.admit_pixels(side, side), Err(GraphError::Memory));
+        let two = SvgGraph::new([image(3000, rect), image(3000, rect)], rect, 1).unwrap();
+        assert_eq!(two.admit_pixels(1, 1), Err(GraphError::Memory));
     }
 
     #[test]

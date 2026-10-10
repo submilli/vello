@@ -19,6 +19,7 @@ mod float_blur;
 mod flood;
 mod gaussian_blur;
 pub(crate) mod graph;
+mod image;
 mod lighting;
 mod morphology;
 mod offset;

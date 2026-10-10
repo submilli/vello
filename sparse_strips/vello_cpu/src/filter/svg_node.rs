@@ -163,8 +163,18 @@ pub(super) fn execute(
             };
             super::lighting::apply(output, &lighting, context.crop, context.origin, space);
         }
-        // Admission rejects image inputs, which need resources the graph lacks.
-        FilterPrimitive::Image { .. } => {}
+        FilterPrimitive::Image {
+            image,
+            source,
+            destination,
+        } => {
+            let placement = super::image::Placement {
+                image: image.pixmap(),
+                source: *source,
+                destination: *destination,
+            };
+            super::image::draw(output, &placement, context.crop, context.origin);
+        }
         FilterPrimitive::Offset { .. } => {
             filter_lowp(
                 &Filter::from_primitive(primitive.clone()),

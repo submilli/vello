@@ -23,6 +23,7 @@ pub mod drop_shadow;
 pub mod flood;
 pub mod gaussian_blur;
 pub mod graph;
+pub mod image;
 pub mod offset;
 pub(crate) mod parameters;
 

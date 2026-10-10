@@ -120,8 +120,11 @@ pub(crate) fn valid(primitive: &FilterPrimitive) -> bool {
                 && valid_color(*color)
                 && valid_light(light_source)
         }
-        // Image inputs need resources the graph does not own.
-        FilterPrimitive::Image { .. } => false,
+        FilterPrimitive::Image {
+            source,
+            destination,
+            ..
+        } => super::graph::valid_rect(*source) && super::graph::valid_rect(*destination),
     }
 }
 
@@ -148,6 +151,8 @@ pub(crate) fn cost(primitive: &FilterPrimitive) -> u64 {
         FilterPrimitive::Turbulence { num_octaves, .. } => {
             16 * u64::from((*num_octaves).clamp(1, MAX_TURBULENCE_OCTAVES))
         }
+        // Bicubic sampling reads sixteen texels.
+        FilterPrimitive::Image { .. } => 16,
         _ => 4,
     }
 }

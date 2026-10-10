@@ -45,7 +45,7 @@
 //! - `Turbulence` - Perlin noise generation
 //! - `DisplacementMap` - Pixel displacement
 //! - `ComponentTransfer` - Per-channel transfer functions
-//! - `Image` - External image reference
+//! - `Image` - Caller-supplied pixels (`feImage`)
 //! - `Tile` - Tiling operation
 //! - `DiffuseLighting`, `SpecularLighting` - Lighting effects
 
@@ -558,16 +558,22 @@ pub enum FilterPrimitive {
         /// Transfer function applied to the alpha channel (None = identity).
         alpha_function: Option<TransferFunction>,
     },
-    /// Reference an external image as filter input.
+    /// Sample caller-supplied pixels, as SVG `feImage` does.
     ///
-    /// Allows using pre-existing images (from an atlas or resource) as
-    /// input to filter operations, useful for texturing and overlays.
+    /// `source` (in image pixels) maps onto `destination` (in filter coordinates),
+    /// whose edges are anti-aliased. Sampling follows Chrome's Skia backend: bicubic
+    /// when upscaled on both axes, otherwise bilinear, with exact weights for a
+    /// whole-pixel source and 4-bit weights for a fractional one. The result is sRGB
+    /// whatever the node's color space.
+    ///
+    /// See: <https://drafts.fxtf.org/filter-effects/#feImageElement>
     Image {
-        /// Identifier referencing an image in the resource atlas.
-        image_id: u32,
-        /// Optional 2D affine transformation matrix [a, b, c, d, e, f].
-        /// Transforms the image before using it as filter input.
-        transform: Option<[f32; 6]>,
+        /// The pixels, already decoded or rasterized.
+        image: crate::filter::image::FilterImage,
+        /// The sampled rectangle, in image pixels.
+        source: Rect,
+        /// Where the source maps, in filter coordinates.
+        destination: Rect,
     },
     /// Tile the input's primitive region across this primitive's region.
     ///
