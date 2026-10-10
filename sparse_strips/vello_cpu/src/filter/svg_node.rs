@@ -14,12 +14,14 @@ use vello_common::kurbo::{Affine, Point, Rect};
 use vello_common::pixmap::Pixmap;
 
 /// Where a node runs: its clipped region and that region's pixels, its primary
-/// input's content pixels, the raster origin in filter coordinates and its
-/// color-interpolation-filters space.
+/// input's content pixels (where edge modes extend it), that input's layer
+/// pixels (everything it may hold), the raster origin in filter coordinates and
+/// its color-interpolation-filters space.
 pub(super) struct Context {
     pub region: Rect,
     pub crop: PixelBounds,
     pub input: PixelBounds,
+    pub layer: PixelBounds,
     pub origin: Point,
     pub space: ColorSpace,
 }
@@ -83,18 +85,23 @@ pub(super) fn execute(
         ),
         // Graph blurs are decal, like Chrome's filter blurs.
         FilterPrimitive::GaussianBlur { std_deviation, .. } => {
-            super::svg_blur::blur(output, [*std_deviation; 2], space);
+            super::svg_blur::blur(output, [*std_deviation; 2], context.layer, space);
         }
         FilterPrimitive::AxisGaussianBlur {
             std_deviation_x,
             std_deviation_y,
             ..
-        } => super::svg_blur::blur(output, [*std_deviation_x, *std_deviation_y], space),
+        } => super::svg_blur::blur(
+            output,
+            [*std_deviation_x, *std_deviation_y],
+            context.layer,
+            space,
+        ),
         FilterPrimitive::DropShadow { .. }
         | FilterPrimitive::DropShadowOnly { .. }
         | FilterPrimitive::AxisDropShadow { .. } => {
             if let Some(shadow) = shadow(primitive) {
-                super::svg_blur::shadow(output, &shadow, space, scratch);
+                super::svg_blur::shadow(output, &shadow, context.layer, space, scratch);
             }
         }
         FilterPrimitive::Morphology {

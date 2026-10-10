@@ -41,6 +41,7 @@ pub fn apply_svg_graph(
             region,
             crop: bounds(region),
             input: bounds(input_region(graph, node.input)),
+            layer: bounds(layer_region(graph, node.input)),
             origin,
             space: node.color_space,
         };
@@ -67,6 +68,16 @@ fn input_region(graph: &SvgGraph, input: Input) -> Rect {
         Input::Result(index) => graph.nodes()[index].region,
     };
     region.intersect(graph.region())
+}
+
+/// Everything an input may hold, standing in for Skia's layer bounds: source
+/// paint reaches beyond the source's content (a canvas drawing past its bitmap)
+/// across the graph region, and results reach their node's region.
+fn layer_region(graph: &SvgGraph, input: Input) -> Rect {
+    match input {
+        Input::SourceGraphic | Input::SourceAlpha => graph.region(),
+        Input::Result(index) => graph.nodes()[index].region.intersect(graph.region()),
+    }
 }
 
 fn input(input: Input, source: &Pixmap, results: &[Pixmap]) -> Pixmap {
@@ -126,6 +137,40 @@ mod tests {
             input2: None,
             region: Rect::new(0.0, 0.0, 2.0, 1.0),
             color_space: ColorSpace::Srgb,
+        }
+    }
+    #[test]
+    fn rescaled_blurs_keep_source_paint_beyond_the_source_region() {
+        // Chrome 154 (`blurs.js` `offCanvasRegion`): a filter region from -300 to
+        // 900 over a 600-pixel canvas, red paint at -200..0 off the canvas, blurred
+        // by 150; the canvas reads these alphas every 40 pixels from 0.
+        let mut n = node(matrices::IDENTITY, Input::SourceGraphic);
+        n.region = Rect::new(-300.0, 0.0, 900.0, 1.0);
+        n.primitive = FilterPrimitive::AxisGaussianBlur {
+            std_deviation_x: 150.0,
+            std_deviation_y: 0.0,
+            edge_mode: vello_common::filter_effects::EdgeMode::None,
+        };
+        let graph = SvgGraph::new([n], Rect::new(-300.0, 0.0, 900.0, 1.0), 0)
+            .unwrap()
+            .with_source_region(Rect::new(0.0, 0.0, 600.0, 1.0))
+            .unwrap();
+        let mut pixels = Pixmap::new(1200, 1);
+        for pixel in &mut pixels.data_mut()[100..300] {
+            *pixel = PremulRgba8 {
+                r: 255,
+                g: 0,
+                b: 0,
+                a: 255,
+            };
+        }
+        apply_svg_graph(&graph, &mut pixels, Point::new(-300.0, 0.0)).unwrap();
+        for (index, expected) in [106_u8, 89, 69, 50, 34, 21, 12, 6, 2]
+            .into_iter()
+            .enumerate()
+        {
+            let actual = pixels.data()[300 + index * 40].a;
+            assert!(actual.abs_diff(expected) <= 1, "{index}: {actual}");
         }
     }
     #[test]

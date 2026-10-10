@@ -15,7 +15,6 @@ pub(crate) mod context;
 mod convolve;
 mod displacement;
 mod drop_shadow;
-mod float_blur;
 mod flood;
 mod gaussian_blur;
 pub(crate) mod graph;
@@ -30,6 +29,7 @@ mod svg_channels;
 mod svg_composite;
 mod svg_gaussian;
 mod svg_node;
+mod svg_rescale;
 mod turbulence;
 
 use context::ScratchBuffer;

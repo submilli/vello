@@ -1,6 +1,7 @@
 // Copyright 2026 the Vello Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! SVG graph blur and shadow primitives on 8-bit working surfaces, as Chrome builds them.
+use super::bounds::PixelBounds;
 use super::channels::{color8, from_space, premultiplied8, to_space};
 use super::{context::ScratchBuffer, filter_lowp};
 use alloc::vec::Vec;
@@ -20,11 +21,17 @@ pub(super) struct Shadow {
     pub with_source: bool,
 }
 
-/// Blur in `space`, storing the working surface at 8 bits like Chrome.
-pub(super) fn blur(pixels: &mut Pixmap, std_deviation: [f32; 2], space: ColorSpace) {
+/// Blur in `space`, storing the working surface at 8 bits like Chrome; `layer`
+/// is the pixels the input may hold.
+pub(super) fn blur(
+    pixels: &mut Pixmap,
+    std_deviation: [f32; 2],
+    layer: PixelBounds,
+    space: ColorSpace,
+) {
     let width = usize::from(pixels.width());
     let mut data: Vec<PremulRgba8> = pixels.data().iter().map(|p| to_space(*p, space)).collect();
-    super::svg_gaussian::blur(&mut data, width, std_deviation);
+    super::svg_gaussian::blur(&mut data, width, std_deviation, layer);
     for (pixel, value) in pixels.data_mut().iter_mut().zip(data) {
         *pixel = from_space(value, space);
     }
@@ -36,11 +43,12 @@ pub(super) fn blur(pixels: &mut Pixmap, std_deviation: [f32; 2], space: ColorSpa
 pub(super) fn shadow(
     output: &mut Pixmap,
     shadow: &Shadow,
+    layer: PixelBounds,
     space: ColorSpace,
     scratch: &mut ScratchBuffer,
 ) {
     let source = output.clone();
-    blur(output, shadow.std_deviation, space);
+    blur(output, shadow.std_deviation, layer, space);
     // The shadow color fills the blurred alpha (Skia's SrcIn color filter).
     let color = color8(shadow.color, space);
     for pixel in output.data_mut() {

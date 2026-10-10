@@ -13,7 +13,7 @@ pub const MAX_NODES: usize = 32;
 /// Aggregate pixels retained by a graph, including source and working storage.
 pub const MAX_INTERMEDIATE_PIXELS: usize = 16 * 1024 * 1024;
 /// Rasters admitted per graph besides one per node: the source, alpha extraction
-/// and float convolution scratch.
+/// and working copies such as a blur's rescaled images.
 pub const FIXED_SURFACES: usize = 16;
 /// Aggregate estimated per-pixel operations over a graph's raster, bounding
 /// neighborhood kernels and octave counts that pages control.

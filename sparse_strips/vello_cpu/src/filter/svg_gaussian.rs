@@ -5,93 +5,71 @@
 //! Each axis is blurred separately and stored at 8 bits, using the three-box
 //! approximation that the specification suggests, in exact integer arithmetic.
 //! Chrome builds Skia without its direct Gaussian pass for small deviations, so a
-//! deviation whose box is a single pixel leaves that axis unchanged.
+//! deviation whose box is a single pixel leaves that axis unchanged. Deviations
+//! beyond the box range blur a rescaled image (`svg_rescale`).
 //! See: <https://drafts.fxtf.org/filter-effects/#feGaussianBlurElement>
-use super::bounds::for_each_column;
+use super::bounds::{PixelBounds, for_each_column};
 use alloc::vec;
 use alloc::vec::Vec;
 use vello_common::color::PremulRgba8;
-use vello_common::filter::gaussian_blur::GaussianBlur;
-use vello_common::filter_effects::EdgeMode;
 #[cfg(not(feature = "std"))]
 use vello_common::kurbo::common::FloatFuncs as _;
 
-/// The largest deviation the three-box pass handles; Chrome rescales larger blurs.
-const BOX_SIGMA: f32 = 135.0;
-/// Larger deviations already spread any admitted raster to near-transparency, and
-/// capping keeps the decimation plan's variance finite.
-const MAX_SIGMA: f32 = 65_536.0;
+/// The largest deviation Skia's raster three-box pass handles.
+pub(super) const BOX_SIGMA: f32 = 135.0;
+/// Skia's `SkBlurImageFilter` clamps deviations to `kMaxSigma`, a box kernel of
+/// at most 1000 pixels; drop shadows blur through the same filter.
+const MAX_SIGMA: f32 = 532.0;
 
-/// Blur `pixels` (row-major, `width` columns) by per-axis deviations.
-pub(super) fn blur(pixels: &mut [PremulRgba8], width: usize, std_deviation: [f32; 2]) {
+/// Blur `pixels` (row-major, `width` columns) by per-axis deviations; `layer`,
+/// the pixels the input may hold, centers any rescale.
+pub(super) fn blur(
+    pixels: &mut [PremulRgba8],
+    width: usize,
+    std_deviation: [f32; 2],
+    layer: PixelBounds,
+) {
     if width == 0 || pixels.is_empty() {
         return;
     }
-    let mut line = Vec::new();
-    if let Some(pass) = Pass::new(std_deviation[0]) {
-        for row in pixels.chunks_exact_mut(width) {
-            pass.apply(row, &mut line);
-        }
-    }
-    if let Some(pass) = Pass::new(std_deviation[1]) {
-        for_each_column(pixels, width, |column| pass.apply(column, &mut line));
+    let sigma = std_deviation.map(|s| s.min(MAX_SIGMA));
+    if !super::svg_rescale::try_blur(pixels, width, sigma, layer, box_blur) {
+        box_blur(pixels, width, sigma.map(|s| s.min(BOX_SIGMA)));
     }
 }
 
-enum Pass {
-    /// Three running box sums of `window`, divided by a scaled divisor.
-    Boxes {
-        window: usize,
-        factor: u64,
-        half: u64,
-    },
-    /// Beyond the box range, the renderer's bounded decimated Gaussian.
-    Decimated(GaussianBlur),
+/// Three-box blur of each axis by a deviation of at most [`BOX_SIGMA`].
+fn box_blur(pixels: &mut [PremulRgba8], width: usize, std_deviation: [f32; 2]) {
+    if width == 0 || pixels.is_empty() {
+        return;
+    }
+    if let Some(pass) = Pass::new(std_deviation[0]) {
+        for row in pixels.chunks_exact_mut(width) {
+            pass.apply(row);
+        }
+    }
+    if let Some(pass) = Pass::new(std_deviation[1]) {
+        for_each_column(pixels, width, |column| pass.apply(column));
+    }
+}
+
+/// Three running box sums of `window`, divided by a scaled divisor.
+struct Pass {
+    window: usize,
+    factor: u64,
+    half: u64,
 }
 
 impl Pass {
     fn new(sigma: f32) -> Option<Self> {
-        if sigma > BOX_SIGMA {
-            let sigma = sigma.min(MAX_SIGMA);
-            return Some(Self::Decimated(GaussianBlur::new(sigma, EdgeMode::None)));
-        }
         let window = window(sigma);
         (window > 1).then(|| boxes(window))
     }
 
     /// Replace `pixels` with their blur; samples outside are transparent.
-    fn apply(&self, pixels: &mut [PremulRgba8], scratch: &mut Vec<[f32; 4]>) {
-        match self {
-            Self::Boxes {
-                window,
-                factor,
-                half,
-            } => boxes_pass(pixels, *window, *factor, *half),
-            Self::Decimated(plan) => {
-                scratch.clear();
-                scratch.extend(pixels.iter().map(|p| unit(*p)));
-                let identity = GaussianBlur::new(0.0, EdgeMode::None);
-                super::float_blur::blur(scratch, pixels.len(), 1, plan, &identity);
-                for (out, value) in pixels.iter_mut().zip(scratch.iter()) {
-                    *out = round_half_up(*value);
-                }
-            }
-        }
+    fn apply(&self, pixels: &mut [PremulRgba8]) {
+        boxes_pass(pixels, self.window, self.factor, self.half);
     }
-}
-
-fn unit(pixel: PremulRgba8) -> [f32; 4] {
-    [pixel.r, pixel.g, pixel.b, pixel.a].map(|v| f32::from(v) * (1.0 / 255.0))
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "Values are clamped to the 8-bit range before truncation."
-)]
-fn round_half_up(value: [f32; 4]) -> PremulRgba8 {
-    let [r, g, b, a] = value.map(|v| (v * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
-    PremulRgba8 { r, g, b, a }
 }
 
 /// The specification's box size: `floor(sigma * 3 * sqrt(2 * pi) / 4 + 0.5)`.
@@ -116,7 +94,7 @@ fn boxes(window: usize) -> Pass {
         reason = "The scaled reciprocal of a divisor above one fits in 32 bits."
     )]
     let factor = ((1.0 / divisor as f64) * (1_u64 << 32) as f64).round() as u64;
-    Pass::Boxes {
+    Pass {
         window,
         factor,
         half: (divisor + 1) >> 1,
@@ -177,6 +155,15 @@ fn boxes_pass(pixels: &mut [PremulRgba8], window: usize, factor: u64, half: u64)
 mod tests {
     use super::*;
 
+    fn whole(x1: usize, y1: usize) -> PixelBounds {
+        PixelBounds {
+            x0: 0,
+            y0: 0,
+            x1,
+            y1,
+        }
+    }
+
     fn alpha(values: &[u8]) -> Vec<PremulRgba8> {
         values
             .iter()
@@ -194,14 +181,11 @@ mod tests {
         assert_eq!(window(2.0), 4);
         assert_eq!(window(10.0), 19);
         for size in [4, 5] {
-            let Pass::Boxes {
+            let Pass {
                 window,
                 factor,
                 half,
-            } = boxes(size)
-            else {
-                panic!("box pass")
-            };
+            } = boxes(size);
             let input: Vec<u8> = (0..23).map(|i| (i * 37 % 256) as u8).collect();
             let mut pixels = alpha(&input);
             boxes_pass(&mut pixels, window, factor, half);
@@ -240,9 +224,9 @@ mod tests {
         assert!(Pass::new(0.5).is_none());
         assert!(Pass::new(0.8).is_some());
         let mut pixels = alpha(&[0, 0, 0, 255, 0, 0, 0]);
-        blur(&mut pixels, 7, [0.5, 0.5]);
+        blur(&mut pixels, 7, [0.5, 0.5], whole(7, 1));
         assert_eq!(pixels[3].a, 255);
-        blur(&mut pixels, 7, [1.0, 0.0]);
+        blur(&mut pixels, 7, [1.0, 0.0], whole(7, 1));
         // Window 2: boxes of 2, 2 and 3 over 12, centered on the source pixel.
         assert_eq!(
             pixels.iter().map(|p| p.a).collect::<Vec<_>>(),
@@ -251,17 +235,59 @@ mod tests {
     }
 
     #[test]
-    fn box_blurs_preserve_energy_and_huge_deviations_stay_bounded() {
+    fn blurs_preserve_energy_and_huge_deviations_clamp() {
         let mut pixels = alpha(&[0; 64]);
         pixels[32].a = 255;
-        blur(&mut pixels, 64, [3.0, 0.0]);
+        blur(&mut pixels, 64, [3.0, 0.0], whole(64, 1));
         let energy: u32 = pixels.iter().map(|p| u32::from(p.a)).sum();
         assert!((250..=260).contains(&energy), "{energy}");
         let mut wide = alpha(&[255; 9]);
-        blur(&mut wide, 3, [500.0, 500.0]);
+        blur(&mut wide, 3, [500.0, 500.0], whole(3, 3));
         assert!(wide.iter().all(|p| p.a < 255));
-        // Squaring this deviation overflows; the pass must still terminate.
-        blur(&mut wide, 3, [f32::MAX, f32::MAX]);
+        // Deviations clamp to Skia's 532, so even this takes the bounded rescale.
+        blur(&mut wide, 3, [f32::MAX, f32::MAX], whole(3, 3));
         assert!(wide.iter().all(|p| p.a == 0));
+        let strip = |sigma| {
+            let mut pixels = alpha(&[0; 1500]);
+            pixels[600..900].iter_mut().for_each(|p| p.a = 255);
+            blur(&mut pixels, 1500, [sigma, 0.0], whole(1500, 1));
+            pixels
+        };
+        assert_eq!(strip(1000.0), strip(532.0));
+        assert_ne!(strip(531.0), strip(532.0));
     }
+
+    #[test]
+    fn rescaled_blurs_match_chrome() {
+        // Chrome 154 (`blurs.js` in submilli-browser): a 200-pixel strip blurred
+        // by 150 on a 600-pixel row, sampled every 40 pixels (one rescale step),
+        // and a 500-pixel strip by 300.5, sampled every 30 pixels from 300 (two).
+        for (width, content, sigma, start, step, chrome) in [
+            (600, 200..400, 150.0, 0, 40, &CHROME_ONE_STEP[..]),
+            (1500, 500..1000, 300.5, 300, 30, &CHROME_TWO_STEPS[..]),
+        ] {
+            let mut pixels = alpha(&vec![0; width]);
+            for pixel in &mut pixels[content.clone()] {
+                pixel.a = 255;
+            }
+            let bounds = PixelBounds {
+                x0: content.start,
+                y0: 0,
+                x1: content.end,
+                y1: 1,
+            };
+            blur(&mut pixels, width, [sigma, 0.0], bounds);
+            for (index, expected) in chrome.iter().enumerate() {
+                let actual = pixels[start + index * step].a;
+                assert!(actual.abs_diff(*expected) <= 1, "{sigma} {index}: {actual}");
+            }
+        }
+    }
+
+    /// Chrome's `blurBeyondBoxRange` alpha from x = 0 to 560.
+    const CHROME_ONE_STEP: [u8; 15] = [
+        21, 34, 50, 69, 89, 106, 120, 127, 127, 120, 106, 89, 69, 50, 34,
+    ];
+    /// Chrome's `twoSteps` alpha from x = 300 to 630.
+    const CHROME_TWO_STEPS: [u8; 12] = [63, 71, 79, 87, 96, 104, 112, 120, 127, 133, 139, 144];
 }

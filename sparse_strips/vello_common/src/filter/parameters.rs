@@ -20,8 +20,8 @@ pub(crate) fn valid(primitive: &FilterPrimitive) -> bool {
         FilterPrimitive::ColorMatrix { matrix } => matrix.iter().copied().all(finite),
         // CSS chains pad their raster by the blur radius, so it stays bounded.
         FilterPrimitive::GaussianBlur { std_deviation, .. } => deviation(*std_deviation),
-        // Work does not grow with these magnitudes: SVG blurs past the box range
-        // are decimated, and SVG nodes are clipped to admitted regions.
+        // Work does not grow with these magnitudes: SVG blurs clamp deviations and
+        // rescale past the box range, and SVG nodes are clipped to admitted regions.
         FilterPrimitive::AxisGaussianBlur {
             std_deviation_x,
             std_deviation_y,
