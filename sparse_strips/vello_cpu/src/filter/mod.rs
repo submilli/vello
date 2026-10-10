@@ -22,6 +22,8 @@ mod image;
 mod lighting;
 mod morphology;
 mod offset;
+#[cfg(test)]
+mod reach_tests;
 mod shift;
 mod svg_blend;
 mod svg_blur;

@@ -12,14 +12,12 @@ use super::bounds::{PixelBounds, for_each_column};
 use alloc::vec;
 use alloc::vec::Vec;
 use vello_common::color::PremulRgba8;
+use vello_common::filter::graph::MAX_BLUR_DEVIATION;
 #[cfg(not(feature = "std"))]
 use vello_common::kurbo::common::FloatFuncs as _;
 
 /// The largest deviation Skia's raster three-box pass handles.
 pub(super) const BOX_SIGMA: f32 = 135.0;
-/// Skia's `SkBlurImageFilter` clamps deviations to `kMaxSigma`, a box kernel of
-/// at most 1000 pixels; drop shadows blur through the same filter.
-const MAX_SIGMA: f32 = 532.0;
 
 /// Blur `pixels` (row-major, `width` columns) by per-axis deviations; `layer`,
 /// the pixels the input may hold, centers any rescale.
@@ -32,7 +30,7 @@ pub(super) fn blur(
     if width == 0 || pixels.is_empty() {
         return;
     }
-    let sigma = std_deviation.map(|s| s.min(MAX_SIGMA));
+    let sigma = std_deviation.map(|s| s.min(MAX_BLUR_DEVIATION));
     if !super::svg_rescale::try_blur(pixels, width, sigma, layer, box_blur) {
         box_blur(pixels, width, sigma.map(|s| s.min(BOX_SIGMA)));
     }

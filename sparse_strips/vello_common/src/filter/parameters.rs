@@ -11,6 +11,9 @@ pub const MAX_KERNEL_ENTRIES: u32 = 256;
 const MAX_ADMITTED_KERNEL_ENTRIES: u32 = 1 << 16;
 /// Morphology radii are capped at this many pixels, as Chrome does (crbug.com/1123035).
 pub const MAX_MORPHOLOGY_RADIUS: u32 = 256;
+/// Skia's `SkBlurImageFilter` clamps deviations to `kMaxSigma`, a box kernel of
+/// at most 1000 pixels; drop shadows blur through the same filter.
+pub const MAX_BLUR_DEVIATION: f32 = 532.0;
 /// Octaves past this are below 8-bit resolution; Chrome caps noise at the same count.
 pub const MAX_TURBULENCE_OCTAVES: u32 = 9;
 

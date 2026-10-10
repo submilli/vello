@@ -3,7 +3,9 @@
 
 //! Validated SVG graph plans. Parsing and resource authority belong to the caller.
 
-pub use super::parameters::{MAX_KERNEL_ENTRIES, MAX_MORPHOLOGY_RADIUS, MAX_TURBULENCE_OCTAVES};
+pub use super::parameters::{
+    MAX_BLUR_DEVIATION, MAX_KERNEL_ENTRIES, MAX_MORPHOLOGY_RADIUS, MAX_TURBULENCE_OCTAVES,
+};
 use crate::filter_effects::FilterPrimitive;
 use crate::kurbo::Rect;
 use alloc::vec::Vec;

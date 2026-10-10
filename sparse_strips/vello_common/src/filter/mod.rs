@@ -26,6 +26,7 @@ pub mod graph;
 pub mod image;
 pub mod offset;
 pub(crate) mod parameters;
+pub mod reach;
 
 /// A filter that has been prepared for rendering.
 #[derive(Debug)]
