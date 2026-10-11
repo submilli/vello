@@ -29,7 +29,7 @@ pub(super) fn blur(
     space: ColorSpace,
 ) {
     let width = usize::from(pixels.width());
-    // Converted in place: a blur's working memory stays near its raster's size.
+    // Converted in place, so the blur keeps no full copy of its surface.
     let data = pixels.data_mut();
     for pixel in data.iter_mut() {
         *pixel = to_space(*pixel, space);

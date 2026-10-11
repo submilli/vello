@@ -15,7 +15,7 @@ use vello_common::pixmap::Pixmap;
 
 /// Apply `filter` to a layer's `pixmap` if it is a planned chain of blurs;
 /// returns `false`, leaving the pixmap unchanged, for other filters.
-pub(crate) fn try_apply(
+pub(super) fn try_apply(
     filter: &Filter,
     pixmap: &mut Pixmap,
     transform: Affine,

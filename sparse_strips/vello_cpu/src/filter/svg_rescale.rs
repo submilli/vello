@@ -211,24 +211,6 @@ struct Image<D = Vec<PremulRgba8>> {
     height: usize,
 }
 
-impl Image {
-    #[expect(
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation,
-        reason = "Callers pass nonnegative extents within the raster's 2^16 bound."
-    )]
-    fn transparent(x0: i64, y0: i64, width: i64, height: i64) -> Self {
-        let (width, height) = (width.max(0) as usize, height.max(0) as usize);
-        Self {
-            data: vec![TRANSPARENT; width * height],
-            x0,
-            y0,
-            width,
-            height,
-        }
-    }
-}
-
 impl<D: AsRef<[PremulRgba8]>> Image<D> {
     fn texel(&self, x: i64, y: i64) -> [f32; 4] {
         let (Ok(column), Ok(row)) = (usize::try_from(x - self.x0), usize::try_from(y - self.y0))
@@ -272,6 +254,22 @@ impl<D: AsRef<[PremulRgba8]>> Image<D> {
 }
 
 impl Image {
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "Callers pass nonnegative extents within the raster's 2^16 bound."
+    )]
+    fn transparent(x0: i64, y0: i64, width: i64, height: i64) -> Self {
+        let (width, height) = (width.max(0) as usize, height.max(0) as usize);
+        Self {
+            data: vec![TRANSPARENT; width * height],
+            x0,
+            y0,
+            width,
+            height,
+        }
+    }
+
     /// Copy `other` into this image where they overlap.
     #[expect(
         clippy::cast_sign_loss,

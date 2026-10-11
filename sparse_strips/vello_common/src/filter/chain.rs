@@ -52,17 +52,24 @@ pub fn plan<'a>(
     // Expansions are offsets, so only the linear part of the transform applies.
     let [a, b, c, d, ..] = transform.as_coeffs();
     let linear = Affine::new([a, b, c, d, 0.0, 0.0]);
+    let mut steps = Vec::with_capacity(graph.primitives.len());
     let mut reaches = Vec::with_capacity(graph.primitives.len());
     for primitive in &graph.primitives {
-        match primitive {
-            FilterPrimitive::GaussianBlur { .. } => {
-                reaches.push(linear.transform_rect_bbox(primitive.filter_expansion()));
-            }
+        let (step, reach) = match primitive {
+            FilterPrimitive::GaussianBlur { std_deviation, .. } => (
+                ChainStep::Blur {
+                    std_deviation: transform_blur_params(*std_deviation, transform),
+                    layer: Rect::ZERO,
+                },
+                linear.transform_rect_bbox(primitive.filter_expansion()),
+            ),
             FilterPrimitive::ColorMatrix { matrix } if matrix[19] == 0.0 => {
-                reaches.push(Rect::ZERO);
+                (ChainStep::ColorMatrix(matrix), Rect::ZERO)
             }
             _ => return None,
-        }
+        };
+        steps.push(step);
+        reaches.push(reach);
     }
     // What each primitive's input must cover, from the parent back to the content.
     let mut reads = Vec::with_capacity(reaches.len());
@@ -73,17 +80,11 @@ pub fn plan<'a>(
     }
     reads.reverse();
     let mut layer = content;
-    let mut steps = Vec::with_capacity(reaches.len());
-    for ((primitive, reach), read) in graph.primitives.iter().zip(&reaches).zip(&reads) {
+    for ((step, reach), read) in steps.iter_mut().zip(&reaches).zip(&reads) {
         layer = layer.intersect(*read);
-        steps.push(match primitive {
-            FilterPrimitive::GaussianBlur { std_deviation, .. } => ChainStep::Blur {
-                std_deviation: transform_blur_params(*std_deviation, transform),
-                layer,
-            },
-            FilterPrimitive::ColorMatrix { matrix } => ChainStep::ColorMatrix(matrix),
-            _ => return None,
-        });
+        if let ChainStep::Blur { layer: input, .. } = step {
+            *input = layer;
+        }
         // Transparent input stays transparent; a blur grows only what it holds.
         if layer.area() > 0.0 {
             layer = grow(layer, *reach);
@@ -93,7 +94,8 @@ pub fn plan<'a>(
 }
 
 /// The pixels a planned chain computes over: what the parent shows and every
-/// step's input layer. Outside them inputs are transparent and outputs unseen.
+/// blur's input layer (a color matrix keeps transparent pixels transparent, so
+/// it needs none). Outside them inputs are transparent and outputs unseen.
 pub fn extent(steps: &[ChainStep<'_>], visible: Rect) -> Rect {
     steps
         .iter()
@@ -135,13 +137,14 @@ mod tests {
         FilterFunction::Blur { radius }
     }
 
+    /// The input layers of the chain's blurs.
     fn layers(filter: &Filter, transform: Affine, content: Rect) -> Vec<Rect> {
         plan(filter, &transform, content, VISIBLE)
             .unwrap()
             .into_iter()
-            .map(|step| match step {
-                ChainStep::Blur { layer, .. } => layer,
-                ChainStep::ColorMatrix(_) => Rect::ZERO,
+            .filter_map(|step| match step {
+                ChainStep::Blur { layer, .. } => Some(layer),
+                ChainStep::ColorMatrix(_) => None,
             })
             .collect()
     }
@@ -181,19 +184,12 @@ mod tests {
             blur(10.0),
         ]);
         let second = Rect::new(20.0, 20.0, 1080.0, 1080.0);
-        assert_eq!(
-            layers(&two, Affine::IDENTITY, CONTENT),
-            [CONTENT, Rect::ZERO, second]
-        );
+        assert_eq!(layers(&two, Affine::IDENTITY, CONTENT), [CONTENT, second]);
         // Empty content stays empty rather than growing by the kernel.
-        let none = layers(&two, Affine::IDENTITY, Rect::new(5000.0, 0.0, 5010.0, 10.0));
+        let unseen = Rect::new(5000.0, 0.0, 5010.0, 10.0);
+        let none = layers(&two, Affine::IDENTITY, unseen);
         assert!(none.iter().all(|layer| layer.area() == 0.0));
-        let steps = plan(
-            &two,
-            &Affine::IDENTITY,
-            Rect::new(5000.0, 0.0, 5010.0, 10.0),
-            VISIBLE,
-        );
+        let steps = plan(&two, &Affine::IDENTITY, unseen, VISIBLE);
         assert_eq!(extent(&steps.unwrap(), VISIBLE), VISIBLE);
     }
 

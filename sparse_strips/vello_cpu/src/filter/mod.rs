@@ -9,11 +9,11 @@
 //! intermediate buffers.
 
 mod bounds;
+mod chain;
 mod channels;
 mod color_matrix;
 pub(crate) mod context;
 mod convolve;
-mod css_chain;
 mod displacement;
 mod drop_shadow;
 mod flood;
@@ -42,7 +42,7 @@ use vello_common::kurbo::Affine;
 use vello_common::pixmap::Pixmap;
 
 /// Apply a filter layer's filter to its rendered `pixmap`: a planned chain of
-/// blurs over its layers ([`css_chain`]), otherwise the kernel's own path.
+/// blurs over its layers ([`chain`]), otherwise the kernel's own path.
 pub(crate) fn apply_layer<S: vello_common::fearless_simd::Simd, F: crate::fine::FineKernel<S>>(
     filter: &Filter,
     pixmap: &mut Pixmap,
@@ -50,7 +50,7 @@ pub(crate) fn apply_layer<S: vello_common::fearless_simd::Simd, F: crate::fine::
     transform: Affine,
     placement: vello_common::filter::FilterLayerPlacement,
 ) {
-    if !css_chain::try_apply(filter, pixmap, transform, placement) {
+    if !chain::try_apply(filter, pixmap, transform, placement) {
         F::filter_layer(pixmap, filter, scratch, transform);
     }
 }
