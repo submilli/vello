@@ -3,6 +3,7 @@
 
 //! Types for paints.
 
+use crate::geometry::RectU16;
 use crate::pixmap::Pixmap;
 use alloc::sync::Arc;
 pub use peniko::Color;
@@ -274,6 +275,51 @@ pub struct Tint {
     pub color: Color,
     /// How the tint is applied.
     pub mode: TintMode,
+}
+
+/// The precision with which nearest ([`ImageQuality::Low`](peniko::ImageQuality::Low))
+/// and bilinear ([`ImageQuality::Medium`](peniko::ImageQuality::Medium)) image
+/// paints place and weigh their texels.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum SamplingPrecision {
+    /// Exact positions and weights.
+    #[default]
+    Exact,
+    /// Skia's raster bitmap shader (`SkBitmapProcState`), which Chrome's
+    /// software canvas uses to draw images with source-over: texel positions
+    /// in 16.16 fixed point, exact texel boundaries resolved to the earlier
+    /// texel, and bilinear weights truncated to sixteenths with an integer
+    /// sum. Like Skia, it only applies to images clamped on both axes. The
+    /// shader filters only images whose sides fit in 14 bits, sampling the
+    /// nearest texel of larger ones, and leaves images with a side of 32768
+    /// texels or more, and bicubic paints, to exact sampling.
+    ///
+    /// Skia derives its inverse from a single-precision image-to-device
+    /// matrix, so set exactly that matrix (coefficients representable in
+    /// `f32`) as the paint transform, under an identity transform; any other
+    /// transform composed into it, beyond whole-pixel root translations,
+    /// moves the texels by rounding. Only `vello_cpu` honors this; other
+    /// renderers sample exactly.
+    FixedPoint {
+        /// The device column where the spans Skia shades start, such as the
+        /// left edge of an unantialiased rectangle: Skia maps a span's first
+        /// pixel in single precision and steps from it in 32.32 fixed point.
+        /// It is in the coordinates the context's transforms map to; root
+        /// translations (filter layers, context origins) move it with them.
+        /// `None` maps each pixel on its own.
+        span_x: Option<i32>,
+        /// The part of the image Skia samples as an image of its own: it
+        /// draws part of an image unfiltered from that part extracted
+        /// (`SkBitmapDevice::drawImageRect`), so positions are mapped relative
+        /// to its corner, in single precision, and texels clamp to it. The
+        /// paint transform still maps the whole image; composed with the
+        /// translation to the subset's corner it must be Skia's
+        /// single-precision matrix for the subset (its local matrix moved to
+        /// the subset, then concatenated with the canvas matrix). Exact
+        /// sampling, where it applies instead, samples the whole image.
+        /// `None` samples the whole image.
+        subset: Option<RectU16>,
+    },
 }
 
 /// A kind of paint that can be used for filling and stroking shapes.

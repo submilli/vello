@@ -178,7 +178,7 @@ pub use glifo::{FontEmbolden, Glyph};
 pub use text::{CpuGlyphRunBackend, GlyphRunBuilder};
 pub use vello_common::fearless_simd::Level;
 pub use vello_common::mask::Mask;
-pub use vello_common::paint::{Image, ImageSource, Paint, PaintType};
+pub use vello_common::paint::{Image, ImageSource, Paint, PaintType, SamplingPrecision};
 pub use vello_common::pixmap::{Pixmap, PixmapMut};
 pub use vello_common::{color, kurbo, peniko};
 

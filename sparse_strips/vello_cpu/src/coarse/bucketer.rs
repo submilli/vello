@@ -16,7 +16,7 @@ use vello_common::encode::{EncodedImage, EncodedPaint};
 use vello_common::filter::FilterLayerPlacement;
 use vello_common::geometry::RectU16;
 use vello_common::mask::Mask;
-use vello_common::paint::{ImageSource, IndexedPaint, Paint};
+use vello_common::paint::{ImageSource, IndexedPaint, Paint, SamplingPrecision};
 use vello_common::pixmap::Pixmap;
 use vello_common::record::{LayerClip, LayerProps, Node, RecordedLayer, RecordedLayerKind};
 use vello_common::strip::{Strip, visit_strip_fill_segments};
@@ -560,6 +560,7 @@ impl CommandBucketer {
                 quality: ImageQuality::Low,
                 alpha: 1.0,
             },
+            sampling_precision: SamplingPrecision::Exact,
             may_have_transparency: true,
             transform: Affine::translate((f64::from(src_offset.0), f64::from(src_offset.1))),
             x_advance: Vec2::new(1.0, 0.0),

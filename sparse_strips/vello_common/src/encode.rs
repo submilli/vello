@@ -10,7 +10,7 @@ use crate::color::{ColorSpaceTag, HueDirection, Srgb, gradient};
 use crate::geometry::RectU16;
 use crate::kurbo::{Affine, Point, Vec2};
 use crate::math::{FloatExt, compute_erf7};
-use crate::paint::{Image, ImageSource, IndexedPaint, Paint, PremulColor, Tint};
+use crate::paint::{Image, ImageSource, IndexedPaint, Paint, PremulColor, SamplingPrecision, Tint};
 use crate::peniko::{ColorStop, ColorStops, Extend, Gradient, GradientKind, ImageQuality};
 use crate::util::f32_to_u8;
 use alloc::borrow::Cow;
@@ -485,53 +485,66 @@ impl EncodeExt for Image {
         transform: Affine,
         tint: Option<Tint>,
     ) -> Paint {
-        let idx = paints.len();
-
-        let mut sampler = self.sampler;
-
-        if sampler.alpha != 1.0 {
-            // If the sampler alpha is not 1.0, we need to force alpha compositing.
-            unimplemented!("Applying opacity to image commands");
-        }
-
-        let c = transform.as_coeffs();
-
-        // Optimize image quality for integer-only translations.
-        if (c[0] as f32 - 1.0).is_nearly_zero()
-            && (c[1] as f32).is_nearly_zero()
-            && (c[2] as f32).is_nearly_zero()
-            && (c[3] as f32 - 1.0).is_nearly_zero()
-            && ((c[4] - c[4].floor()) as f32).is_nearly_zero()
-            && ((c[5] - c[5].floor()) as f32).is_nearly_zero()
-            && sampler.quality == ImageQuality::Medium
-        {
-            sampler.quality = ImageQuality::Low;
-        }
-
-        let transform = transform.inverse();
-
-        let (x_advance, y_advance) = x_y_advances(&transform);
-
-        // If the tint color has alpha < 1.0, the image will have opacities
-        // even if the source pixels are all opaque.
-        let has_opacity = tint.as_ref().is_some_and(|t| t.color.components[3] < 1.0)
-            // Not supported yet, but just to future-proof.
-            || sampler.alpha != 1.0;
-
-        let encoded = EncodedImage {
-            may_have_transparency: self.image.may_have_transparency() || has_opacity,
-            source: self.image.clone(),
-            sampler,
-            transform,
-            x_advance,
-            y_advance,
-            tint,
-        };
-
-        paints.push(EncodedPaint::Image(encoded));
-
-        Paint::Indexed(IndexedPaint::new(idx))
+        encode_image_into(self, paints, transform, tint, SamplingPrecision::Exact)
     }
+}
+
+/// Encode `image` like [`EncodeExt::encode_into`], placing and weighing its
+/// texels with `sampling_precision`.
+pub fn encode_image_into(
+    image: &Image,
+    paints: &mut Vec<EncodedPaint>,
+    transform: Affine,
+    tint: Option<Tint>,
+    sampling_precision: SamplingPrecision,
+) -> Paint {
+    let idx = paints.len();
+
+    let mut sampler = image.sampler;
+
+    if sampler.alpha != 1.0 {
+        // If the sampler alpha is not 1.0, we need to force alpha compositing.
+        unimplemented!("Applying opacity to image commands");
+    }
+
+    let c = transform.as_coeffs();
+
+    // Optimize image quality for integer-only translations.
+    if (c[0] as f32 - 1.0).is_nearly_zero()
+        && (c[1] as f32).is_nearly_zero()
+        && (c[2] as f32).is_nearly_zero()
+        && (c[3] as f32 - 1.0).is_nearly_zero()
+        && ((c[4] - c[4].floor()) as f32).is_nearly_zero()
+        && ((c[5] - c[5].floor()) as f32).is_nearly_zero()
+        && sampler.quality == ImageQuality::Medium
+    {
+        sampler.quality = ImageQuality::Low;
+    }
+
+    let transform = transform.inverse();
+
+    let (x_advance, y_advance) = x_y_advances(&transform);
+
+    // If the tint color has alpha < 1.0, the image will have opacities
+    // even if the source pixels are all opaque.
+    let has_opacity = tint.as_ref().is_some_and(|t| t.color.components[3] < 1.0)
+        // Not supported yet, but just to future-proof.
+        || sampler.alpha != 1.0;
+
+    let encoded = EncodedImage {
+        may_have_transparency: image.image.may_have_transparency() || has_opacity,
+        source: image.image.clone(),
+        sampler,
+        sampling_precision,
+        transform,
+        x_advance,
+        y_advance,
+        tint,
+    };
+
+    paints.push(EncodedPaint::Image(encoded));
+
+    Paint::Indexed(IndexedPaint::new(idx))
 }
 
 /// An encoded paint.
@@ -588,6 +601,8 @@ pub struct EncodedImage {
     pub source: ImageSource,
     /// Sampler
     pub sampler: ImageSampler,
+    /// The precision with which texels are placed and weighed.
+    pub sampling_precision: SamplingPrecision,
     /// Whether the image has opacities.
     pub may_have_transparency: bool,
     /// A transform to apply to the image.

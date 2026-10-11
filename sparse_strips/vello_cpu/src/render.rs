@@ -20,13 +20,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 use hashbrown::HashMap;
 use vello_common::blurred_rounded_rect::BlurredRoundedRectangle;
-use vello_common::encode::{EncodeExt, EncodedPaint};
+use vello_common::encode::{EncodeExt, EncodedPaint, encode_image_into};
 use vello_common::fearless_simd::Level;
 use vello_common::filter::FilterData;
 use vello_common::filter_effects::Filter;
+#[cfg(not(feature = "std"))]
+use vello_common::kurbo::common::FloatFuncs as _;
 use vello_common::kurbo::{Affine, BezPath, Rect, Stroke};
 use vello_common::mask::Mask;
-use vello_common::paint::{ImageId, ImageResolver, Paint, PaintType, Tint};
+use vello_common::paint::{ImageId, ImageResolver, Paint, PaintType, SamplingPrecision, Tint};
 use vello_common::peniko::color::palette::css::BLACK;
 use vello_common::peniko::{BlendMode, Fill};
 use vello_common::pixmap::{Pixmap, PixmapMut};
@@ -204,6 +206,30 @@ impl Default for RenderSettings {
     }
 }
 
+/// `precision` with its span start moved by `root`, which places the context's
+/// coordinates in the surface rendered (filter layers and origins shift by
+/// whole pixels). A root that is not exactly a whole-pixel translation
+/// leaves no known span start: unlike `is_integer_translation`, nearly whole
+/// is not enough, and only the x shift matters.
+fn rooted_precision(precision: SamplingPrecision, root: Affine) -> SamplingPrecision {
+    let SamplingPrecision::FixedPoint {
+        span_x: Some(x),
+        subset,
+    } = precision
+    else {
+        return precision;
+    };
+    let [a, b, c, d, e, _] = root.as_coeffs();
+    let shift = (a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0 && e == e.round())
+        .then(|| (f64::from(x) + e).clamp(f64::from(i32::MIN), f64::from(i32::MAX)));
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "A whole number clamped to the i32 range."
+    )]
+    let span_x = shift.map(|x| x as i32);
+    SamplingPrecision::FixedPoint { span_x, subset }
+}
+
 impl RenderContext {
     /// Create a new render context with the given width and height in pixels.
     pub fn new(width: u16, height: u16) -> Self {
@@ -278,7 +304,17 @@ impl RenderContext {
                 let transform = self
                     .root_transforms
                     .effective_paint_transform(self.transforms());
-                i.encode_into(&mut self.encoded_paints, transform, self.state.tint)
+                let precision = rooted_precision(
+                    self.state.sampling_precision,
+                    self.root_transforms.root_transform(),
+                );
+                encode_image_into(
+                    &i,
+                    &mut self.encoded_paints,
+                    transform,
+                    self.state.tint,
+                    precision,
+                )
             }
         }
     }
@@ -618,6 +654,12 @@ impl RenderContext {
     /// Clear the tint, so subsequent image paints are drawn without tinting.
     pub fn reset_tint(&mut self) {
         self.state.tint = None;
+    }
+
+    /// Set the precision with which subsequent image paints place and weigh
+    /// their texels.
+    pub fn set_sampling_precision(&mut self, precision: SamplingPrecision) {
+        self.state.sampling_precision = precision;
     }
 
     /// Set the blend mode that should be used when drawing objects.
@@ -1394,5 +1436,52 @@ mod tests {
             .fill_glyphs(glyphs.into_iter());
 
         assert!(resources.glyph_resources.is_some());
+    }
+
+    #[test]
+    fn span_starts_follow_whole_pixel_root_translations() {
+        use super::rooted_precision;
+        use vello_common::kurbo::Affine;
+        use vello_common::paint::SamplingPrecision;
+        let precision = SamplingPrecision::FixedPoint {
+            span_x: Some(3),
+            subset: None,
+        };
+        let shifted = rooted_precision(precision, Affine::translate((-10.0, 4.0)));
+        assert_eq!(
+            shifted,
+            SamplingPrecision::FixedPoint {
+                span_x: Some(-7),
+                subset: None
+            }
+        );
+        let scaled = rooted_precision(precision, Affine::scale(2.0));
+        assert_eq!(
+            scaled,
+            SamplingPrecision::FixedPoint {
+                span_x: None,
+                subset: None
+            }
+        );
+        let fractional = rooted_precision(precision, Affine::translate((0.5, 0.0)));
+        assert_eq!(
+            fractional,
+            SamplingPrecision::FixedPoint {
+                span_x: None,
+                subset: None
+            }
+        );
+        let far = rooted_precision(precision, Affine::translate((1e12, 0.0)));
+        assert_eq!(
+            far,
+            SamplingPrecision::FixedPoint {
+                span_x: Some(i32::MAX),
+                subset: None,
+            }
+        );
+        assert_eq!(
+            rooted_precision(SamplingPrecision::Exact, Affine::scale(2.0)),
+            SamplingPrecision::Exact
+        );
     }
 }

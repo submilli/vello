@@ -14,6 +14,7 @@ mod lowp;
 use crate::coarse::depth::DepthBuffer;
 use crate::coarse::{CommandBucketer, LayerFillAttrs, RenderCmd, RowState};
 use crate::filter::context::ScratchBuffer;
+use crate::fine::common::fixed_point_image::{FixedPointImagePainter, FixedPointSampling};
 use crate::fine::common::gradient::GradientPainter;
 pub(crate) use crate::fine::common::gradient::calculate_t_vals;
 pub(crate) use crate::fine::common::gradient::linear::SimdLinearKind;
@@ -1008,7 +1009,31 @@ impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
                         .resolve(*id)
                         .unwrap_or_else(|| panic!("Image {:?} not found in registry", id)),
                 };
+                if pixmap.width() == 0 || pixmap.height() == 0 {
+                    // An empty image has no texels: it paints transparent.
+                    let transparent = PremulColor::from_alpha_color(
+                        crate::peniko::color::palette::css::TRANSPARENT,
+                    );
+                    self.solid_fill(span, transparent, attrs, alphas);
+                    return;
+                }
                 let tint = image.tint.as_ref();
+                // Fixed-point sampling emulates Skia's bitmap shader for every
+                // quality it applies to, so it precedes the exact painters.
+                if let Some(sampling) = FixedPointSampling::of(image, &pixmap) {
+                    fill_complex_paint!(
+                        image.may_have_transparency,
+                        FixedPointImagePainter::new(
+                            simd,
+                            image,
+                            &pixmap,
+                            sampling,
+                            [sampler_x, sampler_y]
+                        ),
+                        tint
+                    );
+                    return;
+                }
 
                 match (image.has_skew(), image.nearest_neighbor()) {
                     (false, false) => {

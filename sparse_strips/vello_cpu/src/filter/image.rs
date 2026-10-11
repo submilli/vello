@@ -7,6 +7,8 @@
 //! whole-pixel source, blending two mip levels once it downscales, or with
 //! weights quantized to sixteenths for a fractional one. Texels clamp to the
 //! sampled subset; the destination's edges are anti-aliased by coverage.
+//! Image paints at `SamplingPrecision::FixedPoint` reproduce Skia's bitmap
+//! shader exactly instead (`crate::fine::common::fixed_point_image`).
 use super::bounds::PixelBounds;
 use super::channels::TRANSPARENT;
 use alloc::vec::Vec;

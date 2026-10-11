@@ -475,7 +475,9 @@ mod tests {
     use vello_common::encode::{EncodedExternalTexture, EncodedImage, EncodedPaint};
     use vello_common::geometry::RectU16;
     use vello_common::kurbo::{Affine, Rect, Vec2};
-    use vello_common::paint::{ImageId, ImageSource, IndexedPaint, Paint, PremulColor};
+    use vello_common::paint::{
+        ImageId, ImageSource, IndexedPaint, Paint, PremulColor, SamplingPrecision,
+    };
     use vello_common::peniko::color::palette::css::BLUE;
     use vello_common::peniko::{Extend, ImageQuality, ImageSampler};
     use vello_common::strip_generator::StripStorage;
@@ -562,6 +564,7 @@ mod tests {
                 quality: ImageQuality::Low,
                 alpha: 1.0,
             },
+            sampling_precision: SamplingPrecision::Exact,
             may_have_transparency: true,
             transform: Affine::IDENTITY,
             x_advance: Vec2::new(1.0, 0.0),
