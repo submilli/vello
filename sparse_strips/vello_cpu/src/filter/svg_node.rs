@@ -2,21 +2,20 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //! Execution of one admitted SVG graph node over its input rasters.
 use super::bounds::PixelBounds;
-use super::channels::{TRANSPARENT, encode};
+use super::channels::encode;
 use super::context::ScratchBuffer;
-use super::filter_lowp;
 use super::lighting::{Lighting, Reflection};
 use super::svg_blur::Shadow;
 use super::turbulence::Turbulence;
 use vello_common::filter::graph::ColorSpace;
-use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
-use vello_common::kurbo::{Affine, Point, Rect};
+use vello_common::filter_effects::{EdgeMode, FilterPrimitive};
+use vello_common::kurbo::{Point, Rect};
 use vello_common::pixmap::Pixmap;
 
 /// Where a node runs: its clipped region and that region's pixels, its primary
-/// input's content pixels (where edge modes extend it), that input's layer
-/// pixels (everything it may hold), the raster origin in filter coordinates and
-/// its color-interpolation-filters space.
+/// input's content pixels (where edge modes extend it), what that input holds
+/// within what the node reads of it (its layer), the working frame's origin in
+/// filter coordinates and its color-interpolation-filters space.
 pub(super) struct Context {
     pub region: Rect,
     pub crop: PixelBounds,
@@ -139,7 +138,6 @@ pub(super) fn execute(
             };
             super::turbulence::apply(output, &turbulence, context.region, context.origin, space);
         }
-        FilterPrimitive::Tile => tile(output, context),
         FilterPrimitive::DiffuseLighting {
             surface_scale,
             diffuse_constant,
@@ -177,14 +175,8 @@ pub(super) fn execute(
         FilterPrimitive::Image { image } => {
             super::image::draw(output, image, context.crop, context.origin);
         }
-        FilterPrimitive::Offset { .. } => {
-            filter_lowp(
-                &Filter::from_primitive(primitive.clone()),
-                output,
-                scratch,
-                Affine::IDENTITY,
-            );
-        }
+        // The graph executor copies these from their input's frame.
+        FilterPrimitive::Offset { .. } | FilterPrimitive::Tile => {}
     }
 }
 
@@ -225,24 +217,4 @@ fn shadow(primitive: &FilterPrimitive) -> Option<Shadow> {
         },
         _ => return None,
     })
-}
-
-/// Repeat the input's pixel rectangle across the node's region.
-fn tile(output: &mut Pixmap, context: &Context) {
-    let (tile, target) = (context.input, context.crop);
-    let width = usize::from(output.width());
-    let source = output.clone();
-    for y in target.y0..target.y1 {
-        for x in target.x0..target.x1 {
-            let pixel = match (
-                tile.extend_x(x as i64, EdgeMode::Wrap),
-                tile.extend_y(y as i64, EdgeMode::Wrap),
-            ) {
-                (Some(sx), Some(sy)) => source.data()[sy * width + sx],
-                _ => TRANSPARENT,
-            };
-            output.data_mut()[y * width + x] = pixel;
-        }
-    }
-    output.recompute_may_have_transparency();
 }

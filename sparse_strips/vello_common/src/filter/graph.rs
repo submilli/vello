@@ -14,8 +14,10 @@ use alloc::vec::Vec;
 pub const MAX_NODES: usize = 32;
 /// Aggregate pixels retained by a graph, including source and working storage.
 pub const MAX_INTERMEDIATE_PIXELS: usize = 16 * 1024 * 1024;
-/// Rasters admitted per graph besides one per node: the source, alpha extraction
-/// and working copies such as a blur's rescaled images.
+/// Working surfaces admitted per graph besides each node's kept result: the
+/// source and output rasters, and alpha extraction and working copies such as a
+/// blur's rescaled images, each as large as the largest frame a node computes
+/// over.
 pub const FIXED_SURFACES: usize = 16;
 /// Aggregate estimated per-pixel operations over a graph's raster, bounding
 /// neighborhood kernels and octave counts that pages control.
@@ -118,7 +120,8 @@ impl SvgGraph {
         Ok(self)
     }
 
-    /// The largest raster area `admit_pixels` accepts for a graph of `nodes` nodes.
+    /// The largest raster area [`SvgGraph::admit_raster`] accepts for a graph of
+    /// `nodes` nodes that each compute over the whole raster.
     pub fn max_admitted_area(nodes: usize) -> usize {
         MAX_INTERMEDIATE_PIXELS / (nodes + FIXED_SURFACES)
     }
@@ -139,41 +142,11 @@ impl SvgGraph {
     pub fn output(&self) -> usize {
         self.output
     }
-
-    /// Conservatively admit source, all results, alpha extraction and float convolution scratch
-    /// surfaces, the image inputs the graph retains, and its total per-pixel work. Admission
-    /// happens before allocations or destination modification.
-    pub fn admit_pixels(&self, width: u16, height: u16) -> Result<(), GraphError> {
-        let area = usize::from(width)
-            .checked_mul(usize::from(height))
-            .ok_or(GraphError::Memory)?;
-        let surfaces = area
-            .checked_mul(self.nodes.len() + FIXED_SURFACES)
-            .ok_or(GraphError::Memory)?;
-        if surfaces.saturating_add(self.image_texels()) > MAX_INTERMEDIATE_PIXELS {
-            return Err(GraphError::Memory);
-        }
-        let work: u64 = self
-            .nodes
-            .iter()
-            .map(|node| {
-                let conversion = match node.color_space {
-                    ColorSpace::Srgb => 0,
-                    ColorSpace::LinearRgb => super::parameters::LINEAR_CONVERSION_COST,
-                };
-                super::parameters::cost(&node.primitive) + conversion
-            })
-            .sum();
-        if work.saturating_mul(area as u64) > MAX_WORK {
-            return Err(GraphError::Work);
-        }
-        Ok(())
-    }
 }
 
 impl SvgGraph {
     /// Texels of the distinct image inputs, which the graph keeps alive.
-    fn image_texels(&self) -> usize {
+    pub(super) fn image_texels(&self) -> usize {
         let mut total = 0_usize;
         for (index, node) in self.nodes.iter().enumerate() {
             let FilterPrimitive::Image { image, .. } = &node.primitive else {
@@ -269,6 +242,10 @@ mod tests {
             Err(GraphError::Input)
         );
     }
+    fn admit(graph: &SvgGraph, width: u16, height: u16) -> Result<(), GraphError> {
+        let raster = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+        graph.admit_raster(raster, raster).map(|_| ())
+    }
     #[test]
     fn graph_bounds_iteration_parameters_and_intermediate_pixels() {
         let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
@@ -287,8 +264,8 @@ mod tests {
             Err(GraphError::Parameter)
         );
         let graph = SvgGraph::new([node(Input::SourceGraphic)], rect, 0).unwrap();
-        assert_eq!(graph.admit_pixels(4096, 4096), Err(GraphError::Memory));
-        assert!(graph.admit_pixels(512, 512).is_ok());
+        assert_eq!(admit(&graph, 4096, 4096), Err(GraphError::Memory));
+        assert!(admit(&graph, 512, 512).is_ok());
     }
     #[test]
     fn svg_primitives_admit_arity_kernels_and_finite_magnitudes() {
@@ -386,18 +363,18 @@ mod tests {
         // Image texels share the intermediate budget; one image used twice counts once.
         let large = image(3000);
         let graph = SvgGraph::new([large.clone(), large], rect, 1).unwrap();
-        assert!(graph.admit_pixels(64, 64).is_ok());
-        let area = SvgGraph::max_admitted_area(2) as f64;
-        let side = area.sqrt() as u16;
-        assert_eq!(graph.admit_pixels(side, side), Err(GraphError::Memory));
+        assert!(admit(&graph, 64, 64).is_ok());
+        // The source and output rasters (2 × 4M pixels) and 9M texels exceed 16M.
+        assert!(admit(&graph, 1500, 1500).is_ok());
+        assert_eq!(admit(&graph, 2000, 2000), Err(GraphError::Memory));
         let two = SvgGraph::new([image(3000), image(3000)], rect, 1).unwrap();
-        assert_eq!(two.admit_pixels(1, 1), Err(GraphError::Memory));
+        assert_eq!(admit(&two, 1, 1), Err(GraphError::Memory));
     }
 
     #[test]
     fn work_budget_counts_kernel_taps_and_octaves() {
         use crate::filter_effects::{ConvolutionKernel, EdgeMode, TurbulenceType};
-        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let rect = Rect::new(0.0, 0.0, 900.0, 900.0);
         let taps = Node {
             primitive: FilterPrimitive::ConvolveMatrix {
                 kernel: ConvolutionKernel {
@@ -412,12 +389,16 @@ mod tests {
                     preserve_alpha: false,
                 },
             },
+            region: rect,
             ..node(Input::SourceGraphic)
         };
         let one = SvgGraph::new([taps.clone()], rect, 0).unwrap();
-        assert!(one.admit_pixels(900, 900).is_ok());
-        let three = SvgGraph::new([taps.clone(), taps.clone(), taps], rect, 2).unwrap();
-        assert_eq!(three.admit_pixels(900, 900), Err(GraphError::Work));
+        assert!(admit(&one, 900, 900).is_ok());
+        let mut chained = [taps.clone(), taps.clone(), taps];
+        chained[1].input = Input::Result(0);
+        chained[2].input = Input::Result(1);
+        let three = SvgGraph::new(chained, rect, 2).unwrap();
+        assert_eq!(admit(&three, 900, 900), Err(GraphError::Work));
         // Octaves beyond the cap cost no more than the cap.
         let noise = |num_octaves| Node {
             primitive: FilterPrimitive::Turbulence {

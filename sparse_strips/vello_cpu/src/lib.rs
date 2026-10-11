@@ -194,4 +194,4 @@ pub enum RenderMode {
 }
 
 /// Bounded SVG filter graph execution over rasterized source pixels.
-pub use filter::graph::apply_svg_graph;
+pub use filter::graph::{apply_svg_graph, apply_svg_graph_to};

@@ -28,7 +28,11 @@ fn reach_sized_rasters_reproduce_the_destination() {
             .with_source_region(Rect::new(-40.0, -30.0, 50.0, 40.0))
             .unwrap();
         let reach = graph.reach(DESTINATION);
-        let mut extent = reach.extent(DESTINATION);
+        let mut extent = reach
+            .nodes
+            .iter()
+            .flatten()
+            .fold(DESTINATION, |extent, rect| extent.union(*rect));
         if let Some(source) = reach.source {
             extent = extent.union(source);
         }

@@ -5,15 +5,15 @@
 //! Skia maps a desired output back through image filters
 //! (`SkImageFilter_Base::getInputBounds`).
 //!
-//! A raster covering the destination and every node's reach computes the
-//! destination exactly, however large the regions are: paint that a generator
-//! creates far away and an offset, tile or neighborhood brings in is computed
-//! where it is read. Each node also reaches the pixels its own crop-dependent
-//! reads touch, so clipping its crop to the raster changes nothing it produces.
-//! The exception is a blur above the box range, whose rescale centers on its
-//! input's layer as the raster clips it.
+//! Computing each node over its reach computes the destination exactly,
+//! however large the regions are: paint that a generator creates far away and
+//! an offset, tile or neighborhood brings in is computed where it is read
+//! (see [`super::frames`]). Each node also reaches the pixels its own
+//! crop-dependent reads touch (edge modes and lighting test the node's crop),
+//! so clipping its crop to what it computes changes nothing it produces.
 
 use super::graph::{Input, MAX_BLUR_DEVIATION, Node, SvgGraph};
+use super::offset::whole_pixels;
 use crate::filter_effects::{EdgeMode, FilterPrimitive};
 #[cfg(not(feature = "std"))]
 use crate::kurbo::common::FloatFuncs as _;
@@ -31,19 +31,22 @@ pub struct Reach {
     pub source: Option<Rect>,
 }
 
-impl Reach {
-    /// The smallest rectangle holding `destination` and every node's pixels.
-    pub fn extent(&self, destination: Rect) -> Rect {
-        self.nodes
-            .iter()
-            .flatten()
-            .fold(outward(destination), |extent, rect| extent.union(*rect))
-    }
+/// A graph's reach, with what each node's consumers read of it.
+pub(super) struct Trace {
+    pub reach: Reach,
+    /// By node index: the pixels consumers (or the destination) read, without
+    /// the node's own crop-dependent reads.
+    pub needs: Vec<Option<Rect>>,
 }
 
 impl SvgGraph {
     /// What the graph reads to produce its output over `destination`.
     pub fn reach(&self, destination: Rect) -> Reach {
+        self.trace(destination).reach
+    }
+
+    /// Map `destination` back through the graph, from its output to its sources.
+    pub(super) fn trace(&self, destination: Rect) -> Trace {
         let nodes = self.nodes();
         let mut needs: Vec<Option<Rect>> = vec![None; nodes.len()];
         let mut reach = Reach {
@@ -75,11 +78,11 @@ impl SvgGraph {
                 }
             }
         }
-        reach
+        Trace { reach, needs }
     }
 
     /// What `node` reads to produce `need`: from each input, and within its own crop.
-    fn reads(&self, node: &Node, need: Rect) -> Reads {
+    pub(super) fn reads(&self, node: &Node, need: Rect) -> Reads {
         let around = |margin: Vec2| Some(inflate(need, margin));
         let pointwise = Reads {
             input: Some(need),
@@ -94,23 +97,24 @@ impl SvgGraph {
             | FilterPrimitive::ComponentTransfer { .. }
             | FilterPrimitive::Composite { .. }
             | FilterPrimitive::Blend { .. } => pointwise,
-            // Offsets move whole pixels (see `vello_cpu`'s `offset_pixels`).
             FilterPrimitive::Offset { dx, dy } => Reads {
-                input: Some(need - Vec2::new(f64::from(dx.round()), f64::from(dy.round()))),
+                input: Some(need - whole_pixels(*dx, *dy)),
                 ..Reads::default()
             },
             FilterPrimitive::Tile => Reads {
-                input: tile(need, self.input_bounds(node.input)),
+                input: self.tiling(node, need).map(|tiling| tiling.reads),
                 ..Reads::default()
             },
+            // Blurs, shadows and morphology ignore their crop: what lies outside
+            // their input's layer is transparent.
             FilterPrimitive::GaussianBlur { std_deviation, .. } => {
-                Reads::around(around(blur(*std_deviation, *std_deviation)))
+                Reads::unary(around(blur(*std_deviation, *std_deviation)))
             }
             FilterPrimitive::AxisGaussianBlur {
                 std_deviation_x,
                 std_deviation_y,
                 ..
-            } => Reads::around(around(blur(*std_deviation_x, *std_deviation_y))),
+            } => Reads::unary(around(blur(*std_deviation_x, *std_deviation_y))),
             FilterPrimitive::DropShadow {
                 dx,
                 dy,
@@ -143,7 +147,7 @@ impl SvgGraph {
             // Radii are capped as execution caps them.
             FilterPrimitive::Morphology { .. } => {
                 let expansion = node.primitive.filter_expansion();
-                Reads::around(around(Vec2::new(expansion.x1, expansion.y1)))
+                Reads::unary(around(Vec2::new(expansion.x1, expansion.y1)))
             }
             // Surface normals read one neighboring pixel.
             FilterPrimitive::DiffuseLighting { .. } | FilterPrimitive::SpecularLighting { .. } => {
@@ -186,7 +190,7 @@ impl SvgGraph {
     }
 
     /// The pixels an input holds content in, which tiles repeat and edge modes extend.
-    fn input_bounds(&self, input: Input) -> Rect {
+    pub(super) fn input_bounds(&self, input: Input) -> Rect {
         let region = match input {
             Input::SourceGraphic | Input::SourceAlpha => self.source_region(),
             Input::Result(index) => self.nodes()[index].region,
@@ -198,13 +202,21 @@ impl SvgGraph {
 /// One node's reads: from its primary and secondary inputs, and positions
 /// within its own crop that crop-dependent edges test.
 #[derive(Default)]
-struct Reads {
-    input: Option<Rect>,
-    input2: Option<Rect>,
-    own: Option<Rect>,
+pub(super) struct Reads {
+    pub input: Option<Rect>,
+    pub input2: Option<Rect>,
+    pub own: Option<Rect>,
 }
 
 impl Reads {
+    /// A unary neighborhood that ignores its crop.
+    fn unary(rect: Option<Rect>) -> Self {
+        Self {
+            input: rect,
+            ..Self::default()
+        }
+    }
+
     /// A unary neighborhood: the input and its own crop around the output.
     fn around(rect: Option<Rect>) -> Self {
         Self {
@@ -230,24 +242,13 @@ fn blur(x: f32, y: f32) -> Vec2 {
 /// A shadow reads its blurred input from behind the offset, and a shadow
 /// drawn with its source reads the source where it lands.
 fn shadow(need: Rect, [dx, dy]: [f32; 2], blur: Vec2, with_source: bool) -> Reads {
-    let behind = need - Vec2::new(f64::from(dx.round()), f64::from(dy.round()));
+    let behind = need - whole_pixels(dx, dy);
     let mut reads = inflate(behind, blur);
     if with_source {
         reads = reads.union(need);
     }
     // The blur's decal edges and the offset stay inside the reads.
-    Reads::around(Some(reads))
-}
-
-/// A tile reads its input's bounds where `need` wraps around them and the
-/// same pixels where it does not.
-fn tile(need: Rect, bounds: Rect) -> Option<Rect> {
-    if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
-        return None;
-    }
-    let (x0, x1) = span((need.x0, need.x1), (bounds.x0, bounds.x1));
-    let (y0, y1) = span((need.y0, need.y1), (bounds.y0, bounds.y1));
-    Some(Rect::new(x0, y0, x1, y1))
+    Reads::unary(Some(reads))
 }
 
 /// Reads past `bounds` that an edge mode maps back into them reach the whole
@@ -272,7 +273,7 @@ fn inflate(rect: Rect, margin: Vec2) -> Rect {
 }
 
 /// The pixels a region covers, rounded outward as region clipping rounds.
-fn outward(rect: Rect) -> Rect {
+pub(super) fn outward(rect: Rect) -> Rect {
     Rect::new(
         rect.x0.floor(),
         rect.y0.floor(),
@@ -282,12 +283,12 @@ fn outward(rect: Rect) -> Rect {
 }
 
 /// `rect` within `bounds`, or `None` when no pixel remains.
-fn pixels_within(rect: Rect, bounds: Rect) -> Option<Rect> {
+pub(super) fn pixels_within(rect: Rect, bounds: Rect) -> Option<Rect> {
     let rect = outward(rect).intersect(bounds);
     (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect)
 }
 
-fn union(a: Option<Rect>, b: Option<Rect>) -> Option<Rect> {
+pub(super) fn union(a: Option<Rect>, b: Option<Rect>) -> Option<Rect> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a.union(b)),
         (a, b) => a.or(b),
@@ -340,7 +341,6 @@ mod tests {
     fn offsets_reach_generated_paint_wherever_it_lies() {
         let reach = reach_of(vec![flood(HUGE), offset(250.0, 0.0, 0)]);
         assert_eq!(reach.nodes[0], Some(Rect::new(-250.0, 0.0, 50.0, 150.0)));
-        assert_eq!(reach.extent(BITMAP), Rect::new(-250.0, 0.0, 300.0, 150.0));
         // Far offsets read far paint without widening what the output holds.
         let far = reach_of(vec![flood(HUGE), offset(1e5, 0.0, 0)]);
         assert_eq!(
@@ -394,7 +394,8 @@ mod tests {
             HUGE,
         )]);
         assert_eq!(blurred.source, Some(BITMAP.inflate(36.0, 36.0)));
-        assert_eq!(blurred.nodes[0], Some(BITMAP.inflate(36.0, 36.0)));
+        // A blur ignores its crop, so it reaches only what it produces.
+        assert_eq!(blurred.nodes[0], Some(BITMAP));
         let noise = node(
             FilterPrimitive::Turbulence {
                 base_frequency_x: 0.05,

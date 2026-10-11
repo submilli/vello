@@ -20,9 +20,9 @@ use vello_common::color::PremulRgba8;
 use vello_common::kurbo::common::FloatFuncs as _;
 
 /// Blur `pixels` (row-major, nonempty, `width > 0` columns) by deviations
-/// that may exceed [`BOX_SIGMA`], centered on `layer`, the pixels the input may
-/// hold. `box_blur` blurs the low-resolution image by deviations of at most
-/// [`BOX_SIGMA`]. Returns `false`, leaving `pixels` unchanged, when Skia would
+/// that may exceed [`BOX_SIGMA`], centered on `layer`, what the input holds
+/// within what the blur reads of it. `box_blur` blurs the low-resolution
+/// image by deviations of at most [`BOX_SIGMA`]. Returns `false`, leaving `pixels` unchanged, when Skia would
 /// not rescale: then a box blur by the deviations clamped to [`BOX_SIGMA`] is
 /// Chrome's result.
 pub(super) fn try_blur(

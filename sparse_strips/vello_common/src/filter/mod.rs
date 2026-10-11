@@ -21,9 +21,11 @@ use crate::util::RectExt;
 use peniko::kurbo::common::FloatFuncs as _;
 
 pub mod chain;
+mod content;
 pub(crate) mod css;
 pub mod drop_shadow;
 pub mod flood;
+pub mod frames;
 pub mod gaussian_blur;
 pub mod graph;
 pub mod image;
