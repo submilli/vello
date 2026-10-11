@@ -20,7 +20,8 @@ use crate::util::RectExt;
 #[cfg(not(feature = "std"))]
 use peniko::kurbo::common::FloatFuncs as _;
 
-pub mod css;
+pub mod chain;
+pub(crate) mod css;
 pub mod drop_shadow;
 pub mod flood;
 pub mod gaussian_blur;
@@ -140,8 +141,8 @@ pub struct FilterLayerPlacement {
     pub src_y: u16,
     /// The layer's drawn content, relative to the pixmap.
     pub content: RectU16,
-    /// What the parent shows of the layer, relative to the pixmap; the whole
-    /// pixmap when unknown.
+    /// What the parent shows of the layer ([`FilterData::visible`]), relative
+    /// to the pixmap; the whole pixmap when unknown.
     pub visible: RectU16,
 }
 
@@ -168,22 +169,11 @@ impl FilterLayerPlacement {
         // large of a pixmap we actually need to allocate. Also, as mentioned
         // in [`FilterLayerPlan::new`], we need to ensure the pixmap itself is
         // also a multiple of the tile width / tile height.
-        let mut pixmap_bbox = bbox
+        let padded = bbox
             .expand(filter_plan.filter_padding)
             .snap_to_tile_coordinates();
-        // A chain of blurs needs only what its parent shows and the layers its
-        // primitives read; a large blur's padding is otherwise mostly unseen.
+        let pixmap_bbox = chain_pixmap_bbox(padded, bbox, filter_plan);
         let visible = filter_plan.visible.unwrap_or(pixmap_bbox);
-        if let Some(extent) = filter_plan.visible.and_then(|visible| {
-            css::chain_extent(
-                &filter_plan.filter,
-                &filter_plan.transform,
-                bbox.as_rect(),
-                visible.as_rect(),
-            )
-        }) {
-            pixmap_bbox = pixmap_bbox.intersect(round_out(extent).snap_to_tile_coordinates());
-        }
 
         // Remember that in `RenderContext`, we eagerly shift everything drawn by `source_shift`
         // to conservatively ensure that everything that might be needed for the filter is in the
@@ -233,7 +223,8 @@ pub struct FilterData {
     pub source_padding: PaddingU16,
     /// What the parent shows of this layer, in the layer's own (shifted)
     /// coordinates, when the renderer knows it. Chains of blurs then compute
-    /// only what is seen ([`css::chain_extent`]).
+    /// only what is seen ([`chain::extent`]); other filters, and filters not
+    /// built by [`Filter::from_chain`], keep their padded layer.
     pub visible: Option<RectU16>,
 }
 
@@ -293,14 +284,35 @@ fn transform_offset_params(dx: f32, dy: f32, transform: &Affine) -> (f32, f32) {
     (transformed_offset.x as f32, transformed_offset.y as f32)
 }
 
-/// The pixels covering `rect`, clamped to the layer's coordinate range.
+/// A planned chain's pixmap: its `padded` pixmap kept to what the parent shows
+/// and the layers the chain reads, since a large blur's padding is otherwise
+/// mostly unseen. Never larger than `padded`.
+fn chain_pixmap_bbox(padded: RectU16, content: RectU16, filter_plan: &FilterData) -> RectU16 {
+    let Some(visible) = filter_plan.visible else {
+        return padded;
+    };
+    let Some(steps) = chain::plan(
+        &filter_plan.filter,
+        &filter_plan.transform,
+        content.as_rect(),
+        visible.as_rect(),
+    ) else {
+        return padded;
+    };
+    let extent = chain::extent(&steps, visible.as_rect());
+    padded.intersect(round_out(extent).snap_to_tile_coordinates())
+}
+
+/// The pixels covering `rect`, clamped to the largest tile-aligned layer
+/// coordinate so snapping cannot overflow.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "Coordinates are clamped to the u16 range before conversion."
 )]
 fn round_out(rect: Rect) -> RectU16 {
-    let clamp = |v: f64| v.clamp(0.0, f64::from(u16::MAX)) as u16;
+    let max = f64::from(u16::MAX - u16::MAX % Tile::WIDTH.max(Tile::HEIGHT));
+    let clamp = |v: f64| v.clamp(0.0, max) as u16;
     RectU16::new(
         clamp(rect.x0.floor()),
         clamp(rect.y0.floor()),

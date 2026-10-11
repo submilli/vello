@@ -4,8 +4,7 @@
 use super::bounds::PixelBounds;
 use super::channels::{color8, from_space, premultiplied8, to_space};
 use super::{context::ScratchBuffer, filter_lowp};
-use alloc::vec::Vec;
-use vello_common::color::{AlphaColor, PremulRgba8, Srgb};
+use vello_common::color::{AlphaColor, Srgb};
 use vello_common::filter::graph::ColorSpace;
 use vello_common::filter_effects::{CompositeOperator, Filter, FilterPrimitive};
 use vello_common::kurbo::Affine;
@@ -30,10 +29,14 @@ pub(super) fn blur(
     space: ColorSpace,
 ) {
     let width = usize::from(pixels.width());
-    let mut data: Vec<PremulRgba8> = pixels.data().iter().map(|p| to_space(*p, space)).collect();
-    super::svg_gaussian::blur(&mut data, width, std_deviation, layer);
-    for (pixel, value) in pixels.data_mut().iter_mut().zip(data) {
-        *pixel = from_space(value, space);
+    // Converted in place: a blur's working memory stays near its raster's size.
+    let data = pixels.data_mut();
+    for pixel in data.iter_mut() {
+        *pixel = to_space(*pixel, space);
+    }
+    super::svg_gaussian::blur(data, width, std_deviation, layer);
+    for pixel in data.iter_mut() {
+        *pixel = from_space(*pixel, space);
     }
     pixels.recompute_may_have_transparency();
 }

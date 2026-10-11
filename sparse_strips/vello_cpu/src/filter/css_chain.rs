@@ -4,25 +4,24 @@
 //!
 //! Each blur takes the box and rescale passes of SVG graph blurs on 8-bit
 //! surfaces, with transparent edges, and rescales about the center of its
-//! input's layer ([`chain_layers`]).
+//! input's layer ([`plan`]).
 use super::bounds::PixelBounds;
 use vello_common::filter::FilterLayerPlacement;
-use vello_common::filter::css::chain_layers;
-use vello_common::filter::gaussian_blur::transform_blur_params;
+use vello_common::filter::chain::{ChainStep, plan};
 use vello_common::filter::graph::ColorSpace;
-use vello_common::filter_effects::{Filter, FilterPrimitive};
+use vello_common::filter_effects::Filter;
 use vello_common::kurbo::{Affine, Point};
 use vello_common::pixmap::Pixmap;
 
-/// Apply `filter` to a layer's `pixmap` if it is a chain of blurs; returns
-/// `false`, leaving the pixmap unchanged, for other filters.
+/// Apply `filter` to a layer's `pixmap` if it is a planned chain of blurs;
+/// returns `false`, leaving the pixmap unchanged, for other filters.
 pub(crate) fn try_apply(
     filter: &Filter,
     pixmap: &mut Pixmap,
     transform: Affine,
     placement: FilterLayerPlacement,
 ) -> bool {
-    let Some(layers) = chain_layers(
+    let Some(steps) = plan(
         filter,
         &transform,
         placement.content.as_rect(),
@@ -31,15 +30,17 @@ pub(crate) fn try_apply(
         return false;
     };
     let (width, height) = (pixmap.width(), pixmap.height());
-    for (primitive, layer) in filter.graph.primitives.iter().zip(layers) {
-        match primitive {
-            FilterPrimitive::GaussianBlur { std_deviation, .. } => {
-                let sigma = transform_blur_params(*std_deviation, &transform);
+    for step in steps {
+        match step {
+            ChainStep::Blur {
+                std_deviation,
+                layer,
+            } => {
                 let layer = PixelBounds::of(layer, Point::ZERO, width, height);
-                super::svg_blur::blur(pixmap, [sigma, sigma], layer, ColorSpace::Srgb);
+                let sigma = [std_deviation; 2];
+                super::svg_blur::blur(pixmap, sigma, layer, ColorSpace::Srgb);
             }
-            FilterPrimitive::ColorMatrix { matrix } => super::color_matrix::apply(pixmap, matrix),
-            _ => unreachable!("chain_layers plans only blurs and color matrices"),
+            ChainStep::ColorMatrix(matrix) => super::color_matrix::apply(pixmap, matrix),
         }
     }
     true
@@ -55,8 +56,8 @@ mod tests {
     use vello_common::pixmap::Pixmap;
 
     /// The alpha of row 600 every 100 pixels of a 1200-pixel canvas filled
-    /// through `blur(radius)`.
-    fn filled_canvas(radius: f32) -> Vec<u8> {
+    /// through `blur(radius)`, and the pixels its filter layer allocates.
+    fn filled_canvas(radius: f32) -> (Vec<u8>, u64) {
         let blur = Filter::from_function(FilterFunction::Blur { radius });
         let chain = Filter::from_chain(blur.graph.primitives.iter().cloned()).unwrap();
         let mut scene = RenderContext::new(1200, 1200);
@@ -65,11 +66,10 @@ mod tests {
         scene.fill_rect(&Rect::new(0.0, 0.0, 1200.0, 1200.0));
         scene.pop_layer();
         scene.flush();
-        // Only the canvas is computed, not 3σ of padding around it.
-        assert!(scene.filter_pixels() <= 1208 * 1208);
         let mut pixmap = Pixmap::new(1200, 1200);
         scene.render(&mut pixmap, &mut Resources::new());
-        (0..12).map(|i| pixmap.sample(i * 100, 600).a).collect()
+        let row = (0..12).map(|i| pixmap.sample(i * 100, 600).a).collect();
+        (row, scene.filter_pixels())
     }
 
     #[test]
@@ -77,8 +77,10 @@ mod tests {
         // Chrome 154 (`css-blurs.js` in submilli-browser): two rescale steps at
         // 1000, which clamps to 532, and one at 300.
         for (radius, chrome) in [(1000.0, CHROME_532), (300.0, CHROME_300)] {
-            for (index, (actual, expected)) in filled_canvas(radius).iter().zip(chrome).enumerate()
-            {
+            let (row, pixels) = filled_canvas(radius);
+            // Only the canvas is computed, not 3σ of padding around it.
+            assert!(pixels <= 1208 * 1208, "{radius}: {pixels}");
+            for (index, (actual, expected)) in row.iter().zip(chrome).enumerate() {
                 assert!(actual.abs_diff(expected) <= 1, "{radius} {index}: {actual}");
             }
         }

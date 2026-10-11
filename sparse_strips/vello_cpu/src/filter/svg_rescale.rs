@@ -41,18 +41,17 @@ pub(super) fn try_blur(
     if x.steps == 0 && y.steps == 0 {
         return false;
     }
-    let mut image = Image {
-        data: pixels.to_vec(),
+    // The first step reads the raster in place; there is always one.
+    let raster = Image {
+        data: &*pixels,
         x0: 0,
         y0: 0,
         width,
         height,
     };
+    let mut image = step(&raster, &mut x, &mut y);
     while x.steps > 0 || y.steps > 0 {
-        let (sx, sy) = (x.next_step(), y.next_step());
-        image = downscale(&image, [&x, &y], [sx, sy]);
-        x.commit(sx);
-        y.commit(sy);
+        image = step(&image, &mut x, &mut y);
     }
     // The blur spreads past the low-resolution content, so it covers everything
     // the raster maps onto, plus a texel for bilinear sampling at the edges.
@@ -192,10 +191,20 @@ fn map_span(position: f64, from: (f32, f32), to: (f32, f32)) -> f64 {
     t0 + (position - f0) * (t1 - t0) / (f1 - f0)
 }
 
+/// Downscale `image` by both axes' next steps and advance them.
+fn step(image: &Image<impl AsRef<[PremulRgba8]>>, x: &mut Axis, y: &mut Axis) -> Image {
+    let (sx, sy) = (x.next_step(), y.next_step());
+    let image = downscale(image, [&*x, &*y], [sx, sy]);
+    x.commit(sx);
+    y.commit(sy);
+    image
+}
+
 /// An 8-bit premultiplied image placed at integer coordinates of its space;
-/// everything outside it is transparent.
-struct Image {
-    data: Vec<PremulRgba8>,
+/// everything outside it is transparent. It owns its texels unless it is the
+/// raster being blurred.
+struct Image<D = Vec<PremulRgba8>> {
+    data: D,
     x0: i64,
     y0: i64,
     width: usize,
@@ -218,7 +227,9 @@ impl Image {
             height,
         }
     }
+}
 
+impl<D: AsRef<[PremulRgba8]>> Image<D> {
     fn texel(&self, x: i64, y: i64) -> [f32; 4] {
         let (Ok(column), Ok(row)) = (usize::try_from(x - self.x0), usize::try_from(y - self.y0))
         else {
@@ -227,7 +238,7 @@ impl Image {
         if column >= self.width || row >= self.height {
             return [0.0; 4];
         }
-        let p = self.data[row * self.width + column];
+        let p = self.data.as_ref()[row * self.width + column];
         [p.r, p.g, p.b, p.a].map(f32::from)
     }
 
@@ -258,7 +269,9 @@ impl Image {
         let [r, g, b, a] = sum.map(|v| quantize(v / 255.0));
         PremulRgba8 { r, g, b, a }
     }
+}
 
+impl Image {
     /// Copy `other` into this image where they overlap.
     #[expect(
         clippy::cast_sign_loss,
@@ -288,7 +301,11 @@ impl Image {
     clippy::cast_possible_truncation,
     reason = "Low-resolution coordinates lie within the raster's 2^16 extent."
 )]
-fn downscale(image: &Image, [x, y]: [&Axis; 2], [sx, sy]: [f32; 2]) -> Image {
+fn downscale(
+    image: &Image<impl AsRef<[PremulRgba8]>>,
+    [x, y]: [&Axis; 2],
+    [sx, sy]: [f32; 2],
+) -> Image {
     let (dx, dy) = (
         scale_about_center(x.bounds, sx),
         scale_about_center(y.bounds, sy),

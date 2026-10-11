@@ -23,7 +23,7 @@ use peniko::kurbo::common::FloatFuncs as _;
 ///
 /// # Returns
 /// The scaled standard deviation in device space
-pub fn transform_blur_params(std_deviation: f32, transform: &Affine) -> f32 {
+pub(crate) fn transform_blur_params(std_deviation: f32, transform: &Affine) -> f32 {
     let (scale_x, scale_y) = extract_scales(transform);
     let uniform_scale = (scale_x + scale_y) / 2.0;
     // TODO: Support separate std_deviation for x and y axes (std_deviation_x, std_deviation_y)

@@ -251,19 +251,13 @@ impl SingleThreadedDispatcher {
                 image_resolver,
             );
 
-            if !crate::filter::css_chain::try_apply(
+            crate::filter::apply_layer::<S, F>(
                 &filter_plan.filter,
                 &mut pixmap,
+                filter_ctx.scratch(),
                 filter_plan.transform,
                 *placement,
-            ) {
-                F::filter_layer(
-                    &mut pixmap,
-                    &filter_plan.filter,
-                    filter_ctx.scratch(),
-                    filter_plan.transform,
-                );
-            }
+            );
 
             // Save the filtered pixmap to disk for debugging.
             // #[cfg(all(debug_assertions, feature = "std", feature = "png"))]

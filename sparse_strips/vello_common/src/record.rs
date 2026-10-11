@@ -583,6 +583,20 @@ mod tests {
         assert_eq!(padded.visible, RectU16::new(0, 0, 2000, 900));
     }
 
+    /// A parent region reaching the end of the coordinate range cannot
+    /// overflow tile snapping.
+    #[test]
+    fn chain_placement_near_the_coordinate_limit() {
+        let blur = FilterPrimitive::GaussianBlur {
+            std_deviation: 1.0,
+            edge_mode: crate::filter_effects::EdgeMode::None,
+        };
+        let mut data = FilterData::new(Filter::from_chain([blur]).unwrap(), Affine::IDENTITY);
+        data.visible = Some(RectU16::new(0, 0, u16::MAX, 8));
+        let placement = FilterLayerPlacement::new(RectU16::new(0, 0, 8, 8), &data);
+        assert_eq!(placement.pixmap_bbox, RectU16::new(0, 0, 12, 8));
+    }
+
     #[test]
     fn filter_placement_with_source_shift() {
         let placement = FilterLayerPlacement::new(
