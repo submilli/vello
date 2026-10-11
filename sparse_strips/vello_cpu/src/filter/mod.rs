@@ -13,6 +13,7 @@ mod channels;
 mod color_matrix;
 pub(crate) mod context;
 mod convolve;
+pub(crate) mod css_chain;
 mod displacement;
 mod drop_shadow;
 mod flood;

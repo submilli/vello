@@ -17,8 +17,10 @@ use crate::kurbo::{Affine, Rect, Vec2};
 use crate::math::snap_up;
 use crate::tile::Tile;
 use crate::util::RectExt;
+#[cfg(not(feature = "std"))]
+use peniko::kurbo::common::FloatFuncs as _;
 
-pub(crate) mod css;
+pub mod css;
 pub mod drop_shadow;
 pub mod flood;
 pub mod gaussian_blur;
@@ -136,6 +138,11 @@ pub struct FilterLayerPlacement {
     ///
     /// See the comments in `FilterLayerPlacement::new` for more information.
     pub src_y: u16,
+    /// The layer's drawn content, relative to the pixmap.
+    pub content: RectU16,
+    /// What the parent shows of the layer, relative to the pixmap; the whole
+    /// pixmap when unknown.
+    pub visible: RectU16,
 }
 
 impl FilterLayerPlacement {
@@ -144,6 +151,8 @@ impl FilterLayerPlacement {
         dest_bbox: RectU16::ZERO,
         src_x: 0,
         src_y: 0,
+        content: RectU16::ZERO,
+        visible: RectU16::ZERO,
     };
 
     pub(crate) fn new(bbox: RectU16, filter_plan: &FilterData) -> Self {
@@ -159,9 +168,22 @@ impl FilterLayerPlacement {
         // large of a pixmap we actually need to allocate. Also, as mentioned
         // in [`FilterLayerPlan::new`], we need to ensure the pixmap itself is
         // also a multiple of the tile width / tile height.
-        let pixmap_bbox = bbox
+        let mut pixmap_bbox = bbox
             .expand(filter_plan.filter_padding)
             .snap_to_tile_coordinates();
+        // A chain of blurs needs only what its parent shows and the layers its
+        // primitives read; a large blur's padding is otherwise mostly unseen.
+        let visible = filter_plan.visible.unwrap_or(pixmap_bbox);
+        if let Some(extent) = filter_plan.visible.and_then(|visible| {
+            css::chain_extent(
+                &filter_plan.filter,
+                &filter_plan.transform,
+                bbox.as_rect(),
+                visible.as_rect(),
+            )
+        }) {
+            pixmap_bbox = pixmap_bbox.intersect(round_out(extent).snap_to_tile_coordinates());
+        }
 
         // Remember that in `RenderContext`, we eagerly shift everything drawn by `source_shift`
         // to conservatively ensure that everything that might be needed for the filter is in the
@@ -176,12 +198,15 @@ impl FilterLayerPlacement {
         let src_x = shift_x.saturating_sub(pixmap_bbox.x0);
         let src_y = shift_y.saturating_sub(pixmap_bbox.y0);
         let dest_bbox = pixmap_bbox.relative_to_origin((shift_x, shift_y));
+        let origin = (pixmap_bbox.x0, pixmap_bbox.y0);
 
         Self {
             pixmap_bbox,
             dest_bbox,
             src_x,
             src_y,
+            content: bbox.intersect(pixmap_bbox).relative_to_origin(origin),
+            visible: visible.intersect(pixmap_bbox).relative_to_origin(origin),
         }
     }
 
@@ -206,6 +231,10 @@ pub struct FilterData {
     ///
     /// See [`Filter::source_expansion`].
     pub source_padding: PaddingU16,
+    /// What the parent shows of this layer, in the layer's own (shifted)
+    /// coordinates, when the renderer knows it. Chains of blurs then compute
+    /// only what is seen ([`css::chain_extent`]).
+    pub visible: Option<RectU16>,
 }
 
 impl FilterData {
@@ -242,6 +271,7 @@ impl FilterData {
             transform,
             filter_padding,
             source_padding,
+            visible: None,
         }
     }
 
@@ -261,4 +291,20 @@ fn transform_offset_params(dx: f32, dy: f32, transform: &Affine) -> (f32, f32) {
     let [a, b, c, d, _, _] = transform.as_coeffs();
     let transformed_offset = Vec2::new(a * offset.x + c * offset.y, b * offset.x + d * offset.y);
     (transformed_offset.x as f32, transformed_offset.y as f32)
+}
+
+/// The pixels covering `rect`, clamped to the layer's coordinate range.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "Coordinates are clamped to the u16 range before conversion."
+)]
+fn round_out(rect: Rect) -> RectU16 {
+    let clamp = |v: f64| v.clamp(0.0, f64::from(u16::MAX)) as u16;
+    RectU16::new(
+        clamp(rect.x0.floor()),
+        clamp(rect.y0.floor()),
+        clamp(rect.x1.ceil()),
+        clamp(rect.y1.ceil()),
+    )
 }

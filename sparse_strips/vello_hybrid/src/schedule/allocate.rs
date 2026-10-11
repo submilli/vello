@@ -263,6 +263,8 @@ mod tests {
                 dest_bbox: RectU16::ZERO,
                 src_x: 0,
                 src_y: 0,
+                content: RectU16::ZERO,
+                visible: RectU16::ZERO,
             },
         };
         let filter = LayerAllocationRequest::new(bbox, &filter_kind, TextureParity::Odd);

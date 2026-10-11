@@ -251,12 +251,19 @@ impl SingleThreadedDispatcher {
                 image_resolver,
             );
 
-            F::filter_layer(
-                &mut pixmap,
+            if !crate::filter::css_chain::try_apply(
                 &filter_plan.filter,
-                filter_ctx.scratch(),
+                &mut pixmap,
                 filter_plan.transform,
-            );
+                *placement,
+            ) {
+                F::filter_layer(
+                    &mut pixmap,
+                    &filter_plan.filter,
+                    filter_ctx.scratch(),
+                    filter_plan.transform,
+                );
+            }
 
             // Save the filtered pixmap to disk for debugging.
             // #[cfg(all(debug_assertions, feature = "std", feature = "png"))]
@@ -353,7 +360,17 @@ impl Dispatcher for SingleThreadedDispatcher {
         mask: Option<Mask>,
         filter_data: Option<FilterData>,
     ) {
-        if let Some(filter_data) = &filter_data {
+        let mut filter_data = filter_data;
+        if let Some(filter_data) = &mut filter_data {
+            // The parent's viewport, in the layer's shifted coordinates, is all
+            // the parent can show of it.
+            let (left, top) = filter_data.source_shift();
+            filter_data.visible = Some(RectU16::new(
+                left,
+                top,
+                left.saturating_add(self.viewport.width()),
+                top.saturating_add(self.viewport.height()),
+            ));
             self.viewport.push_root_viewport(filter_data);
         }
 
@@ -506,6 +523,10 @@ impl Dispatcher for SingleThreadedDispatcher {
 
     fn is_multi_threaded(&self) -> bool {
         false
+    }
+
+    fn filter_pixels(&self) -> u64 {
+        self.recorder.filter_pixels()
     }
 }
 

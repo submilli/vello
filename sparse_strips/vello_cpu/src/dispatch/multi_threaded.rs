@@ -724,6 +724,10 @@ impl Dispatcher for MultiThreadedDispatcher {
     fn is_multi_threaded(&self) -> bool {
         true
     }
+
+    fn filter_pixels(&self) -> u64 {
+        self.recorder.filter_pixels()
+    }
 }
 
 impl Debug for MultiThreadedDispatcher {

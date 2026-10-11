@@ -236,6 +236,19 @@ impl<D> CommandRecorder<D> {
         !self.layer_stack.is_empty()
     }
 
+    /// The pixels of every popped filter layer's pixmap: what rendering them
+    /// allocates at once.
+    pub fn filter_pixels(&self) -> u64 {
+        self.filter_layers
+            .iter()
+            .filter_map(|id| match &self.layers[*id as usize].kind {
+                RecordedLayerKind::Filter { placement, .. } => Some(placement.pixmap_bbox),
+                RecordedLayerKind::Regular => None,
+            })
+            .map(|bbox| u64::from(bbox.width()) * u64::from(bbox.height()))
+            .sum()
+    }
+
     /// Reset the command recorder.
     #[inline]
     pub fn reset(&mut self, width: u16, height: u16) {
@@ -499,6 +512,7 @@ mod tests {
             transform: Affine::IDENTITY,
             filter_padding,
             source_padding,
+            visible: None,
         }
     }
 
@@ -541,6 +555,32 @@ mod tests {
         assert_eq!(placement.pixmap_bbox, RectU16::new(4, 4, 24, 28));
         assert_eq!(placement.dest_bbox, RectU16::new(4, 4, 24, 28));
         assert_eq!(placement.src_origin(), (0, 0));
+    }
+
+    /// A chain of blurs keeps what its parent shows and its content, not the
+    /// padding around them; without the parent's region it keeps its padding.
+    #[test]
+    fn chain_placement_keeps_what_the_parent_shows() {
+        let blur = FilterPrimitive::GaussianBlur {
+            std_deviation: 100.0,
+            edge_mode: crate::filter_effects::EdgeMode::None,
+        };
+        let mut data = FilterData::new(Filter::from_chain([blur]).unwrap(), Affine::IDENTITY);
+        assert_eq!(data.source_shift(), (300, 300));
+        let canvas = RectU16::new(300, 300, 1500, 1500);
+        data.visible = Some(canvas);
+        let content = RectU16::new(400, 0, 1800, 600);
+        let placement = FilterLayerPlacement::new(content, &data);
+        // The canvas and the content within 3σ of it, down to where the blurred
+        // content ends.
+        assert_eq!(placement.pixmap_bbox, RectU16::new(300, 0, 1800, 900));
+        assert_eq!(placement.content, RectU16::new(100, 0, 1500, 600));
+        assert_eq!(placement.visible, RectU16::new(0, 300, 1200, 900));
+        assert_eq!(placement.src_origin(), (0, 300));
+        data.visible = None;
+        let padded = FilterLayerPlacement::new(content, &data);
+        assert_eq!(padded.pixmap_bbox, RectU16::new(100, 0, 2100, 900));
+        assert_eq!(padded.visible, RectU16::new(0, 0, 2000, 900));
     }
 
     #[test]

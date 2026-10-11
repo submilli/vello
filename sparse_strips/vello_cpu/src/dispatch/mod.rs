@@ -77,4 +77,6 @@ pub(crate) trait Dispatcher: Debug + Send {
         image_resolver: &dyn ImageResolver,
     );
     fn is_multi_threaded(&self) -> bool;
+    /// See [`vello_common::record::CommandRecorder::filter_pixels`].
+    fn filter_pixels(&self) -> u64;
 }

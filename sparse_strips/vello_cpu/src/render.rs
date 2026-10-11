@@ -881,6 +881,12 @@ impl RenderContext {
     pub fn is_multi_threaded(&self) -> bool {
         self.dispatcher.is_multi_threaded()
     }
+
+    /// The pixels the filter layers recorded so far allocate when rendered,
+    /// so a host can bound a drawing's memory before rendering it.
+    pub fn filter_pixels(&self) -> u64 {
+        self.dispatcher.filter_pixels()
+    }
 }
 
 /// Image registry implementation.
