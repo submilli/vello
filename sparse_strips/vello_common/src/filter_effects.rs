@@ -560,20 +560,16 @@ pub enum FilterPrimitive {
     },
     /// Sample caller-supplied pixels, as SVG `feImage` does.
     ///
-    /// `source` (in image pixels) maps onto `destination` (in filter coordinates),
-    /// whose edges are anti-aliased. Sampling follows Chrome's Skia backend: bicubic
-    /// when upscaled on both axes, otherwise bilinear, with exact weights for a
-    /// whole-pixel source and 4-bit weights for a fractional one. The result is sRGB
-    /// whatever the node's color space.
+    /// The image was planned for its placement: it carries Chrome's sampling
+    /// (bicubic when upscaled on both axes, otherwise bilinear, with mipmaps for
+    /// a whole-pixel downscale and 4-bit weights for a fractional source) and
+    /// the texels the draw reads. Destination edges are anti-aliased. The result
+    /// is sRGB whatever the node's color space.
     ///
     /// See: <https://drafts.fxtf.org/filter-effects/#feImageElement>
     Image {
-        /// The pixels, already decoded or rasterized.
+        /// The planned texels and their placement.
         image: crate::filter::image::FilterImage,
-        /// The sampled rectangle, in image pixels.
-        source: Rect,
-        /// Where the source maps, in filter coordinates.
-        destination: Rect,
     },
     /// Tile the input's primitive region across this primitive's region.
     ///

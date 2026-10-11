@@ -123,11 +123,11 @@ pub(crate) fn valid(primitive: &FilterPrimitive) -> bool {
                 && valid_color(*color)
                 && valid_light(light_source)
         }
-        FilterPrimitive::Image {
-            source,
-            destination,
-            ..
-        } => super::graph::valid_rect(*source) && super::graph::valid_rect(*destination),
+        FilterPrimitive::Image { image } => {
+            let sampling = image.sampling();
+            super::graph::valid_rect(sampling.source)
+                && super::graph::valid_rect(sampling.destination)
+        }
     }
 }
 
@@ -154,7 +154,7 @@ pub(crate) fn cost(primitive: &FilterPrimitive) -> u64 {
         FilterPrimitive::Turbulence { num_octaves, .. } => {
             16 * u64::from((*num_octaves).clamp(1, MAX_TURBULENCE_OCTAVES))
         }
-        // Bicubic sampling reads sixteen texels.
+        // Bicubic sampling reads sixteen texels, trilinear eight.
         FilterPrimitive::Image { .. } => 16,
         _ => 4,
     }

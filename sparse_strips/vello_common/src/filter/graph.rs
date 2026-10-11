@@ -150,7 +150,7 @@ impl SvgGraph {
         let surfaces = area
             .checked_mul(self.nodes.len() + FIXED_SURFACES)
             .ok_or(GraphError::Memory)?;
-        if surfaces.saturating_add(self.image_pixels()) > MAX_INTERMEDIATE_PIXELS {
+        if surfaces.saturating_add(self.image_texels()) > MAX_INTERMEDIATE_PIXELS {
             return Err(GraphError::Memory);
         }
         let work: u64 = self
@@ -172,8 +172,8 @@ impl SvgGraph {
 }
 
 impl SvgGraph {
-    /// Pixels of the distinct image inputs, which the graph keeps alive.
-    fn image_pixels(&self) -> usize {
+    /// Texels of the distinct image inputs, which the graph keeps alive.
+    fn image_texels(&self) -> usize {
         let mut total = 0_usize;
         for (index, node) in self.nodes.iter().enumerate() {
             let FilterPrimitive::Image { image, .. } = &node.primitive else {
@@ -183,9 +183,7 @@ impl SvgGraph {
                 matches!(&earlier.primitive, FilterPrimitive::Image { image: other, .. } if other == image)
             });
             if !shared {
-                let pixmap = image.pixmap();
-                total = total
-                    .saturating_add(usize::from(pixmap.width()) * usize::from(pixmap.height()));
+                total = total.saturating_add(image.retained_texels());
             }
         }
         total
@@ -368,37 +366,31 @@ mod tests {
     }
 
     #[test]
-    fn image_inputs_admit_finite_placements_and_count_their_pixels() {
+    fn image_inputs_count_the_texels_they_keep() {
         use crate::filter::image::FilterImage;
         use crate::pixmap::Pixmap;
         let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
-        let image = |side: u16, destination: Rect| Node {
-            primitive: FilterPrimitive::Image {
-                image: FilterImage::new(Pixmap::new(side, side)),
-                source: Rect::new(0.0, 0.0, f64::from(side), f64::from(side)),
-                destination,
-            },
-            ..node(Input::SourceGraphic)
+        // A raster kept whole, drawn at its size.
+        let image = |side: u16| {
+            let bounds = Rect::new(0.0, 0.0, f64::from(side), f64::from(side));
+            let image = FilterImage::plan([u32::from(side); 2], bounds, bounds, bounds, rect)
+                .unwrap()
+                .keep(Pixmap::new(side, side), [0, 0])
+                .unwrap();
+            Node {
+                primitive: FilterPrimitive::Image { image },
+                ..node(Input::SourceGraphic)
+            }
         };
-        assert!(SvgGraph::new([image(4, rect)], rect, 0).is_ok());
-        for invalid in [
-            Rect::new(0.0, 0.0, f64::NAN, 1.0),
-            Rect::new(2.0, 0.0, 1.0, 1.0),
-            Rect::new(0.0, 0.0, 2e6, 1.0),
-        ] {
-            assert_eq!(
-                SvgGraph::new([image(4, invalid)], rect, 0),
-                Err(GraphError::Parameter)
-            );
-        }
-        // Image pixels share the intermediate budget; one image used twice counts once.
-        let large = image(3000, rect);
+        assert!(SvgGraph::new([image(4)], rect, 0).is_ok());
+        // Image texels share the intermediate budget; one image used twice counts once.
+        let large = image(3000);
         let graph = SvgGraph::new([large.clone(), large], rect, 1).unwrap();
         assert!(graph.admit_pixels(64, 64).is_ok());
         let area = SvgGraph::max_admitted_area(2) as f64;
         let side = area.sqrt() as u16;
         assert_eq!(graph.admit_pixels(side, side), Err(GraphError::Memory));
-        let two = SvgGraph::new([image(3000, rect), image(3000, rect)], rect, 1).unwrap();
+        let two = SvgGraph::new([image(3000), image(3000)], rect, 1).unwrap();
         assert_eq!(two.admit_pixels(1, 1), Err(GraphError::Memory));
     }
 

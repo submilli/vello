@@ -24,6 +24,8 @@ pub mod flood;
 pub mod gaussian_blur;
 pub mod graph;
 pub mod image;
+pub mod image_sampling;
+mod mipmap;
 pub mod offset;
 pub(crate) mod parameters;
 pub mod reach;

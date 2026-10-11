@@ -170,17 +170,8 @@ pub(super) fn execute(
             };
             super::lighting::apply(output, &lighting, context.crop, context.origin, space);
         }
-        FilterPrimitive::Image {
-            image,
-            source,
-            destination,
-        } => {
-            let placement = super::image::Placement {
-                image: image.pixmap(),
-                source: *source,
-                destination: *destination,
-            };
-            super::image::draw(output, &placement, context.crop, context.origin);
+        FilterPrimitive::Image { image } => {
+            super::image::draw(output, image, context.crop, context.origin);
         }
         FilterPrimitive::Offset { .. } => {
             filter_lowp(
