@@ -164,7 +164,7 @@ impl SvgGraph {
                 Reads::around(Some(reads))
             }
             // Samples round to the nearest pixel within half the scale; samples outside
-            // the input's bounds are transparent whatever the crop.
+            // the input's layer are transparent whatever the crop.
             FilterPrimitive::DisplacementMap { scale, .. } => {
                 let reach = (f64::from(*scale).abs() / 2.0).ceil() + 1.0;
                 Reads {

@@ -174,6 +174,86 @@ mod tests {
         }
     }
     #[test]
+    fn unextended_convolutions_read_source_paint_beyond_the_source_region() {
+        use vello_common::filter_effects::{ConvolutionKernel, EdgeMode};
+        // Chrome 154 (`sources.js` `convolveEdgeNone` and `convolveEdgeDuplicate`): a
+        // 5×1 box over a 300-pixel canvas whose filter region starts at 0, red paint
+        // at -10..0 off the canvas. `none` reads that paint; `duplicate` extends the
+        // canvas's own edge, which is transparent.
+        let convolve = |edge_mode| {
+            let mut n = node(matrices::IDENTITY, Input::SourceGraphic);
+            n.region = Rect::new(0.0, 0.0, 300.0, 1.0);
+            n.primitive = FilterPrimitive::ConvolveMatrix {
+                kernel: ConvolutionKernel {
+                    columns: 5,
+                    rows: 1,
+                    values: alloc::vec![1.0; 5],
+                    target_x: 2,
+                    target_y: 0,
+                    divisor: 5.0,
+                    bias: 0.0,
+                    edge_mode,
+                    preserve_alpha: false,
+                },
+            };
+            let graph = SvgGraph::new([n], Rect::new(-1e6, -1e6, 1e6, 1e6), 0)
+                .unwrap()
+                .with_source_region(Rect::new(0.0, 0.0, 300.0, 1.0))
+                .unwrap();
+            let mut pixels = Pixmap::new(320, 1);
+            for pixel in &mut pixels.data_mut()[10..20] {
+                *pixel = PremulRgba8 {
+                    r: 255,
+                    g: 0,
+                    b: 0,
+                    a: 255,
+                };
+            }
+            apply_svg_graph(&graph, &mut pixels, Point::new(-20.0, 0.0)).unwrap();
+            [20, 21, 22].map(|index| pixels.data()[index].a)
+        };
+        assert_eq!(convolve(EdgeMode::None), [102, 51, 0]);
+        assert_eq!(convolve(EdgeMode::Duplicate), [0, 0, 0]);
+    }
+    #[test]
+    fn displacements_read_source_paint_beyond_the_source_region() {
+        use vello_common::color::AlphaColor;
+        use vello_common::filter_effects::ColorChannel;
+        // Chrome 154 (`sources.js` `displacement`): a filter region from 100 to 400
+        // over a 600-pixel canvas, red paint at -150..-50 off the canvas, displaced
+        // 200 pixels right (and less than one down) by a map whose red channel is 0.
+        let mut map = node(matrices::IDENTITY, Input::SourceGraphic);
+        map.region = Rect::new(100.0, 0.0, 400.0, 2.0);
+        map.primitive = FilterPrimitive::Flood {
+            color: AlphaColor::from_rgba8(0, 128, 0, 255),
+        };
+        let mut displaced = node(matrices::IDENTITY, Input::SourceGraphic);
+        displaced.region = map.region;
+        displaced.input2 = Some(Input::Result(0));
+        displaced.primitive = FilterPrimitive::DisplacementMap {
+            scale: 400.0,
+            x_channel: ColorChannel::Red,
+            y_channel: ColorChannel::Green,
+        };
+        let graph = SvgGraph::new([map, displaced], Rect::new(-1e6, -1e6, 1e6, 1e6), 1)
+            .unwrap()
+            .with_source_region(Rect::new(0.0, 0.0, 600.0, 2.0))
+            .unwrap();
+        let mut pixels = Pixmap::new(800, 2);
+        for pixel in (0..2).flat_map(|row| row * 800 + 50..row * 800 + 150) {
+            let pixel = &mut pixels.data_mut()[pixel];
+            *pixel = PremulRgba8 {
+                r: 255,
+                g: 0,
+                b: 0,
+                a: 255,
+            };
+        }
+        apply_svg_graph(&graph, &mut pixels, Point::new(-200.0, 0.0)).unwrap();
+        let alpha = [80, 100, 140, 149, 150, 160].map(|x| pixels.data()[200 + x].a);
+        assert_eq!(alpha, [0, 255, 255, 255, 0, 0]);
+    }
+    #[test]
     fn blur_and_shadow_accept_tiny_odd_thin_and_empty_rasters() {
         use vello_common::filter_effects::EdgeMode;
         for (width, height) in [(0, 0), (0, 1), (1, 0), (1, 1), (3, 5), (1, 127), (65535, 1)] {

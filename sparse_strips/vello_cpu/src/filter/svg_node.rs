@@ -68,7 +68,9 @@ pub(super) fn execute(
                     map,
                     *scale,
                     [*x_channel, *y_channel],
-                    context.input,
+                    // As in Chrome, samples read everything the input holds, source
+                    // paint past the source's content too.
+                    context.layer,
                     space,
                 );
             }
@@ -110,10 +112,12 @@ pub(super) fn execute(
             radius_y,
         } => super::morphology::apply(output, *operator, [*radius_x, *radius_y], space),
         FilterPrimitive::ConvolveMatrix { kernel } => {
-            // As in Chrome, duplicate and wrap extend the input inside the node's crop,
-            // while `none` reads the uncropped input and treats its outside as transparent.
+            // As in Chrome, duplicate and wrap extend the input's content inside the
+            // node's crop, while `none` reads everything the uncropped input holds
+            // (source paint past the source's content too) and treats its outside as
+            // transparent.
             let bounds = match kernel.edge_mode {
-                EdgeMode::None => context.input,
+                EdgeMode::None => context.layer,
                 _ => context.crop.intersect(context.input),
             };
             super::convolve::apply(output, kernel, bounds, space);
