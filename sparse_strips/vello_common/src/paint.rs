@@ -285,6 +285,16 @@ pub enum SamplingPrecision {
     /// Exact positions and weights.
     #[default]
     Exact,
+    /// Fixed-point sampling in the original device coordinate system, while
+    /// painting into a translated temporary surface. Single-precision matrix
+    /// inversion and point mapping happen before subtracting that origin;
+    /// translating first can move a sample across a four-bit weight boundary.
+    FixedPointAtOrigin {
+        /// Span start in the temporary surface's coordinates.
+        span_x: Option<i32>,
+        /// Original device position of the temporary surface's top-left pixel.
+        origin: [i32; 2],
+    },
     /// Skia's raster bitmap shader (`SkBitmapProcState`), which Chrome's
     /// software canvas uses to draw images with source-over: texel positions
     /// in 16.16 fixed point, exact texel boundaries resolved to the earlier

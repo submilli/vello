@@ -212,6 +212,20 @@ impl Default for RenderSettings {
 /// leaves no known span start: unlike `is_integer_translation`, nearly whole
 /// is not enough, and only the x shift matters.
 fn rooted_precision(precision: SamplingPrecision, root: Affine) -> SamplingPrecision {
+    if let SamplingPrecision::FixedPointAtOrigin { span_x, origin } = precision {
+        let [a, b, c, d, e, f] = root.as_coeffs();
+        if a != 1.0 || b != 0.0 || c != 0.0 || d != 1.0 || e != e.round() || f != f.round() {
+            return SamplingPrecision::Exact;
+        }
+        let shifted = |value: f64| value.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+        return SamplingPrecision::FixedPointAtOrigin {
+            span_x: span_x.map(|x| shifted(f64::from(x) + e)),
+            origin: [
+                shifted(f64::from(origin[0]) - e),
+                shifted(f64::from(origin[1]) - f),
+            ],
+        };
+    }
     let SamplingPrecision::FixedPoint {
         span_x: Some(x),
         subset,

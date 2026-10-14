@@ -52,8 +52,10 @@ impl FixedPointSampling {
     pub(crate) fn of(image: &EncodedImage, pixmap: &Pixmap) -> Option<Self> {
         let clamped =
             image.sampler.x_extend == Extend::Pad && image.sampler.y_extend == Extend::Pad;
-        let SamplingPrecision::FixedPoint { subset, .. } = image.sampling_precision else {
-            return None;
+        let subset = match image.sampling_precision {
+            SamplingPrecision::FixedPoint { subset, .. } => subset,
+            SamplingPrecision::FixedPointAtOrigin { .. } => None,
+            SamplingPrecision::Exact => return None,
         };
         // Callers paint empty images transparent first; the painter's
         // clamping still needs at least one texel.
@@ -102,6 +104,7 @@ pub(crate) struct FixedPointImagePainter<'a, S: Simd> {
     /// The inverse transform's coefficients, in single precision as Skia
     /// keeps its matrices.
     transform: [f32; 6],
+    origin: [f32; 2],
     /// The x and y steps along a span, in 32.32 fixed point.
     steps: [i64; 2],
     /// The center of the device column where spans start.
@@ -123,16 +126,23 @@ impl<'a, S: Simd> FixedPointImagePainter<'a, S> {
         FixedPointSampling { filtered, texels }: FixedPointSampling,
         [start_x, start_y]: [f64; 2],
     ) -> Self {
-        let span_x = match image.sampling_precision {
-            SamplingPrecision::FixedPoint { span_x, .. } => span_x.map(|x| x as f32 + 0.5),
-            SamplingPrecision::Exact => None,
+        let (span_x, origin) = match image.sampling_precision {
+            SamplingPrecision::FixedPoint { span_x, .. } => (span_x, [0, 0]),
+            SamplingPrecision::FixedPointAtOrigin { span_x, origin } => (span_x, origin),
+            SamplingPrecision::Exact => (None, [0, 0]),
         };
         let [x0, y0, ..] = texels.bounds;
-        let transform = skia_inverse(image.transform, [x0, y0]);
+        let original =
+            image.transform * Affine::translate((-f64::from(origin[0]), -f64::from(origin[1])));
+        let transform = skia_inverse(original, [x0, y0]);
+        let origin = origin.map(|v| v as f32);
+        let span_x = span_x.map(|x| x as f32 + origin[0] + 0.5);
+
         Self {
             pixmap,
             texels,
             transform,
+            origin,
             steps: [fractional(transform[0]), fractional(transform[1])],
             span_x,
             chunk: chunk(transform, filtered),
@@ -177,6 +187,7 @@ impl<'a, S: Simd> FixedPointImagePainter<'a, S> {
     /// without a known span start, each pixel is mapped on its own.
     fn position(&self, x: f32, y: f32) -> [i64; 2] {
         let [a, b, c, d, e, f] = self.transform;
+        let (x, y) = (x + self.origin[0], y + self.origin[1]);
         let map = |x: f32| {
             [
                 fractional((x * a + y * c) + e),
@@ -681,6 +692,55 @@ mod tests {
                     mode,
                 );
             }
+        }
+
+        #[test]
+        fn translated_surfaces_keep_original_fixed_point_sample_positions() {
+            let image = impulse(14);
+            let placement = Affine::new([0.85714287, 0.0, 0.0, 0.85714287, 4.0, 11.1428566]);
+            let render = |origin: [i32; 2], size: [u16; 2], preserve| {
+                let mut context = RenderContext::new(size[0], size[1]);
+                let local =
+                    Affine::translate((-f64::from(origin[0]), -f64::from(origin[1]))) * placement;
+                let span_x = Some(
+                    (placement
+                        .transform_rect_bbox(Rect::new(0.0, 0.0, 14.0, 1.0))
+                        .x0
+                        .ceil() as i32)
+                        - origin[0],
+                );
+                context.set_sampling_precision(if preserve {
+                    SamplingPrecision::FixedPointAtOrigin { span_x, origin }
+                } else {
+                    SamplingPrecision::FixedPoint {
+                        span_x,
+                        subset: None,
+                    }
+                });
+                context.set_transform(Affine::IDENTITY);
+                context.set_paint(PaintType::Image(ImageBrush {
+                    image: ImageSource::Pixmap(Arc::clone(&image)),
+                    sampler: ImageSampler::default(),
+                }));
+                context.set_paint_transform(local);
+                context.fill_rect(&Rect::new(0.0, 0.0, f64::from(size[0]), f64::from(size[1])));
+                let mut output = Pixmap::new(size[0], size[1]);
+                context.render(output.as_mut(), &mut Resources::new());
+                output
+            };
+            let full = render([0, 0], [24, 24], true);
+            let cropped = render([4, 11], [12, 2], true);
+            let rebased = render([4, 11], [12, 2], false);
+            for y in 0..2 {
+                for x in 0..12 {
+                    assert_eq!(cropped.sample(x, y), full.sample(x + 4, y + 11));
+                }
+            }
+            assert_ne!(
+                cropped.data(),
+                rebased.data(),
+                "rebasing before f32 mapping loses the phase"
+            );
         }
 
         #[track_caller]

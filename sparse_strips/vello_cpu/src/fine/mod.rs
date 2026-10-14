@@ -1162,7 +1162,10 @@ impl<S: Simd> PosExt<S> for f32x4<S> {
         let columns: [f32; Tile::HEIGHT as usize] = [0.0, 1.0, 2.0, 3.0];
         let column_mask: Self = columns.simd_into(simd);
 
-        column_mask.mul_add(Self::splat(simd, y_advance), Self::splat(simd, pos))
+        // Keep the two roundings on every backend. FMA on ARM but separate
+        // operations on Wasm can place a row on opposite sides of a bilinear
+        // weight boundary, changing the resulting byte.
+        column_mask * Self::splat(simd, y_advance) + Self::splat(simd, pos)
     }
 }
 
@@ -1284,4 +1287,27 @@ mod macros {
 
     pub(crate) use f32x16_painter;
     pub(crate) use u8x16_painter;
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+    use vello_common::fearless_simd::{Fallback, Level, dispatch};
+
+    fn phases<S: Simd>(simd: S) -> [u32; 4] {
+        let positions = f32x4::splat_pos(simd, 1.0 / 3.0, 0.0, 2.0 / 3.0);
+        core::array::from_fn(|row| positions[row].to_bits())
+    }
+
+    #[test]
+    fn fractional_tile_rows_keep_the_same_phase_on_scalar_and_simd() {
+        // Row three falls on different bilinear weight sides when its advance
+        // is fused: the image's red channel then differs by one byte.
+        let scalar = phases(Fallback::new());
+        let accelerated = dispatch!(Level::new(), simd => phases(simd));
+        let expected =
+            [0.0_f32, 1.0, 2.0, 3.0].map(|row| (row * (2.0_f32 / 3.0) + 1.0_f32 / 3.0).to_bits());
+        assert_eq!(scalar, expected);
+        assert_eq!(accelerated, expected);
+    }
 }
