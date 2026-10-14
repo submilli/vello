@@ -16,7 +16,7 @@ pub struct RasterBudget {
 impl RasterBudget {
     /// Charge the complete transformed path before flattening or stroking.
     pub fn charge(&mut self, path: &BezPath, transform: Affine) -> Result<(), GeometryLimit> {
-        self.elements += path.elements().len();
+        self.elements = self.elements.saturating_add(path.elements().len());
         if self.elements > 65_536 {
             return Err(GeometryLimit);
         }
@@ -79,4 +79,21 @@ fn device_point(point: Point, transform: Affine) -> Result<Point, GeometryLimit>
         return Err(GeometryLimit);
     }
     Ok(point)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retrying_an_exhausted_budget_cannot_overflow_its_counter() {
+        let mut budget = RasterBudget {
+            elements: usize::MAX,
+            length: 0.0,
+        };
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        assert!(budget.charge(&path, Affine::IDENTITY).is_err());
+        assert_eq!(budget.elements, usize::MAX);
+    }
 }

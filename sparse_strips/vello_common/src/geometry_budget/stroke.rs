@@ -62,7 +62,7 @@ impl StrokeBudget {
                     self.elements += 32.0 + style.dash_pattern.len() as f64;
                     continue;
                 }
-                PathEl::LineTo(point) => (std::slice::from_ref(point), false),
+                PathEl::LineTo(point) => (core::slice::from_ref(point), false),
                 PathEl::QuadTo(a, b) => {
                     self.charge_segment(&[current, *a, *b], true, style, transform, dash_min)?;
                     current = *b;
@@ -73,7 +73,7 @@ impl StrokeBudget {
                     current = *c;
                     continue;
                 }
-                PathEl::ClosePath => (std::slice::from_ref(&start), false),
+                PathEl::ClosePath => (core::slice::from_ref(&start), false),
             };
             for point in points {
                 self.charge_segment(&[current, *point], curved, style, transform, dash_min)?;
