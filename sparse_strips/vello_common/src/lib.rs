@@ -71,6 +71,7 @@ pub mod filter_effects;
 pub mod flatten;
 pub(crate) mod flatten_simd;
 pub mod geometry;
+pub mod geometry_budget;
 pub mod image_cache;
 pub mod mask;
 pub mod math;
