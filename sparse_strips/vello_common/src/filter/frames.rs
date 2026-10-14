@@ -28,6 +28,16 @@ const RASTERS: usize = 2;
 pub struct Frames {
     raster: Rect,
     nodes: Vec<Option<Frame>>,
+    cost: RasterCost,
+}
+
+/// Admitted resources of one execution, for callers sharing limits across graphs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RasterCost {
+    /// Retained and working texels, including the caller's source and output.
+    pub pixels: usize,
+    /// Estimated pixel operations, using the same cost as graph admission.
+    pub work: u64,
 }
 
 /// Where one node is computed.
@@ -45,6 +55,11 @@ pub struct Frame {
 }
 
 impl Frames {
+    /// The resources admitted for this raster and destination.
+    pub fn cost(&self) -> RasterCost {
+        self.cost
+    }
+
     /// The raster the source is drawn into and the output is read from.
     pub fn raster(&self) -> Rect {
         self.raster
@@ -75,6 +90,7 @@ impl SvgGraph {
         let mut frames = Frames {
             raster,
             nodes: Vec::with_capacity(self.nodes().len()),
+            cost: RasterCost::default(),
         };
         for (index, node) in self.nodes().iter().enumerate() {
             let frame = trace.needs[index].map(|need| {
@@ -110,7 +126,7 @@ impl SvgGraph {
     /// blur's rescaled images), each as large as the largest frame computed,
     /// the image inputs the graph retains, and the per-pixel work over each
     /// node's frame.
-    fn admit_frames(&self, frames: &Frames) -> Result<(), GraphError> {
+    fn admit_frames(&self, frames: &Frames) -> Result<RasterCost, GraphError> {
         let rasters = pixels(frames.raster)?.saturating_mul(RASTERS);
         let mut widest = 0_usize;
         let mut kept = 0_usize;
@@ -142,14 +158,17 @@ impl SvgGraph {
         if work > MAX_WORK {
             return Err(GraphError::Work);
         }
-        Ok(())
+        Ok(RasterCost {
+            pixels: retained,
+            work,
+        })
     }
 
     /// Admit computing the graph to produce its output over `destination`,
     /// reading the source from and writing the output to `raster`.
     pub fn admit_raster(&self, raster: Rect, destination: Rect) -> Result<Frames, GraphError> {
-        let frames = self.frames(raster, destination);
-        self.admit_frames(&frames)?;
+        let mut frames = self.frames(raster, destination);
+        frames.cost = self.admit_frames(&frames)?;
         Ok(frames)
     }
 
@@ -214,6 +233,24 @@ mod tests {
     fn graph(nodes: Vec<Node>) -> SvgGraph {
         let output = nodes.len() - 1;
         SvgGraph::new(nodes, HUGE, output).unwrap()
+    }
+
+    #[test]
+    fn admitted_cost_reports_the_same_surfaces_and_work_as_admission() {
+        let raster = Rect::new(0.0, 0.0, 4.0, 3.0);
+        let graph = graph(vec![flood()]);
+        let cost = graph.admit_raster(raster, raster).unwrap().cost();
+        assert_eq!(cost.pixels, (FIXED_SURFACES + 1) * 12);
+        assert_eq!(
+            cost.work,
+            super::super::parameters::cost(&graph.nodes()[0].primitive) * 12
+        );
+        // Destination-driven execution charges only the node's actual frame;
+        // the caller's source/output still occupy the whole raster.
+        let tiny = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let clipped = graph.admit_raster(raster, tiny).unwrap().cost();
+        assert_eq!(clipped.pixels, RASTERS * 12 + FIXED_SURFACES - RASTERS + 1);
+        assert_eq!(clipped.work * 12, cost.work);
     }
 
     #[test]
