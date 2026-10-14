@@ -8,6 +8,8 @@ mod hairline;
 mod hairline_context_tests;
 #[cfg(test)]
 mod stroke_tests;
+#[cfg(test)]
+mod image_opacity_tests;
 
 use crate::RenderMode;
 use crate::dispatch::Dispatcher;

@@ -10,7 +10,9 @@ use crate::color::{ColorSpaceTag, HueDirection, Srgb, gradient};
 use crate::geometry::RectU16;
 use crate::kurbo::{Affine, Point, Vec2};
 use crate::math::{FloatExt, compute_erf7};
-use crate::paint::{Image, ImageSource, IndexedPaint, Paint, PremulColor, SamplingPrecision, Tint};
+use crate::paint::{
+    Image, ImageSource, IndexedPaint, Paint, PremulColor, SamplingPrecision, Tint, TintMode,
+};
 use crate::peniko::{ColorStop, ColorStops, Extend, Gradient, GradientKind, ImageQuality};
 use crate::util::f32_to_u8;
 use alloc::borrow::Cow;
@@ -502,10 +504,29 @@ pub fn encode_image_into(
 
     let mut sampler = image.sampler;
 
-    if sampler.alpha != 1.0 {
-        // If the sampler alpha is not 1.0, we need to force alpha compositing.
-        unimplemented!("Applying opacity to image commands");
-    }
+    // Image opacity is a source multiplier, including when an existing tint
+    // replaces the source color. Folding it into the tint keeps both CPU
+    // pipelines on their existing premultiplied alpha-compositing path.
+    let tint = if sampler.alpha != 1.0 {
+        let alpha = if sampler.alpha.is_finite() {
+            sampler.alpha.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        sampler.alpha = 1.0;
+        Some(match tint {
+            Some(tint) => Tint {
+                color: tint.color.multiply_alpha(alpha),
+                ..tint
+            },
+            None => Tint {
+                color: peniko::Color::WHITE.multiply_alpha(alpha),
+                mode: TintMode::Multiply,
+            },
+        })
+    } else {
+        tint
+    };
 
     let c = transform.as_coeffs();
 
