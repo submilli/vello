@@ -147,19 +147,10 @@ impl SvgGraph {
 impl SvgGraph {
     /// Texels of the distinct image inputs, which the graph keeps alive.
     pub(super) fn image_texels(&self) -> usize {
-        let mut total = 0_usize;
-        for (index, node) in self.nodes.iter().enumerate() {
-            let FilterPrimitive::Image { image, .. } = &node.primitive else {
-                continue;
-            };
-            let shared = self.nodes[..index].iter().any(|earlier| {
-                matches!(&earlier.primitive, FilterPrimitive::Image { image: other, .. } if other == image)
-            });
-            if !shared {
-                total = total.saturating_add(image.retained_texels());
-            }
-        }
-        total
+        super::image::unique_retained(self.nodes.iter().filter_map(|node| match &node.primitive {
+            FilterPrimitive::Image { image } => Some(image),
+            _ => None,
+        }))
     }
 }
 
@@ -369,6 +360,67 @@ mod tests {
         assert_eq!(admit(&graph, 2000, 2000), Err(GraphError::Memory));
         let two = SvgGraph::new([image(3000), image(3000)], rect, 1).unwrap();
         assert_eq!(admit(&two, 1, 1), Err(GraphError::Memory));
+    }
+
+    #[test]
+    fn shared_mip_windows_count_once_through_narrow_retries() {
+        use crate::color::PremulRgba8;
+        use crate::filter::image::{FilterImage, ImageRows};
+        use crate::filter::image_cache::ImageCache;
+        use alloc::sync::Arc;
+        struct Rows;
+        impl ImageRows for Rows {
+            fn read(&self, _: u32, _: u32, row: &mut [PremulRgba8]) -> bool {
+                row.fill(PremulRgba8::from_u32(0xff000000));
+                true
+            }
+        }
+        let image: Arc<dyn ImageRows> = Arc::new(Rows);
+        let whole = Rect::new(0., 0., 4096., 4096.);
+        let draw = Rect::new(0., 0., 1024., 1024.);
+        let tiny = Rect::new(0., 0., 1., 1.);
+        let plans = |area| {
+            (0..4)
+                .map(|_| {
+                    (
+                        FilterImage::plan([4096, 4096], whole, draw, draw, area).unwrap(),
+                        image.clone(),
+                    )
+                })
+                .collect()
+        };
+        let mut cache = ImageCache::default();
+        let exact = cache
+            .share_batch(
+                plans(draw),
+                MAX_INTERMEDIATE_PIXELS as u64,
+                32 * 1024 * 1024,
+            )
+            .unwrap();
+        assert_eq!(cache.retained_texels(), 5_242_880);
+        for images in [
+            exact,
+            cache
+                .share_batch(
+                    plans(tiny),
+                    MAX_INTERMEDIATE_PIXELS as u64,
+                    32 * 1024 * 1024,
+                )
+                .unwrap(),
+        ] {
+            let nodes = images
+                .into_iter()
+                .map(|image| Node {
+                    primitive: FilterPrimitive::Image { image },
+                    region: tiny,
+                    ..node(Input::SourceGraphic)
+                })
+                .collect::<Vec<_>>();
+            let graph = SvgGraph::new(nodes, tiny, 3).unwrap();
+            assert_eq!(graph.image_texels(), 5_242_880);
+            assert!(graph.admit_raster(tiny, tiny).is_ok());
+        }
+        assert_eq!(cache.streamed_texels(), 4096 * 4096);
     }
 
     #[test]

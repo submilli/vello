@@ -29,6 +29,7 @@ pub mod frames;
 pub mod gaussian_blur;
 pub mod graph;
 pub mod image;
+pub mod image_cache;
 pub mod image_sampling;
 mod mipmap;
 pub mod offset;

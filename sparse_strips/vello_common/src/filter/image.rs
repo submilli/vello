@@ -89,6 +89,29 @@ impl FilterImage {
     }
 }
 
+/// Texels retained by these draws, counting each shared allocation once.
+pub(super) fn unique_retained<'a>(images: impl Iterator<Item = &'a FilterImage>) -> usize {
+    let mut seen = Vec::new();
+    let mut total = 0_usize;
+    for image in images {
+        for window in &image.0.windows {
+            let retained = window.retained();
+            if retained == 0 {
+                continue;
+            }
+            let identity = match &window.texels {
+                Texels::Kept(pixels) => Arc::as_ptr(pixels).cast::<()>(),
+                Texels::Shared { image, .. } => Arc::as_ptr(image).cast::<()>(),
+            };
+            if !seen.contains(&identity) {
+                seen.push(identity);
+                total = total.saturating_add(retained);
+            }
+        }
+    }
+    total
+}
+
 impl PartialEq for FilterImage {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
@@ -98,8 +121,8 @@ impl PartialEq for FilterImage {
 /// A planned draw whose texels are not read yet.
 #[derive(Debug)]
 pub struct ImagePlan {
-    sampling: Sampling,
-    requests: Vec<Request>,
+    pub(super) sampling: Sampling,
+    pub(super) requests: Vec<Request>,
 }
 
 impl ImagePlan {
@@ -155,16 +178,26 @@ impl ImagePlan {
         let subset = self.sampling.subset;
         let mips: Vec<Request> = self.mip_requests().copied().collect();
         let built = mipmap::build(&*image, subset, &mips)?;
-        let mut windows: Vec<Window> = mips
+        let windows: Vec<Window> = mips
             .iter()
             .zip(built)
             .map(|(request, pixels)| Window {
                 level: request.level,
                 size: self.sampling.level_size(request.level),
                 origin: [request.window.x0, request.window.y0].map(i64::from),
-                texels: Texels::Kept(pixels),
+                texels: Texels::Kept(Arc::new(pixels)),
             })
             .collect();
+        self.with_windows(image, retained, windows)
+    }
+
+    pub(super) fn with_windows(
+        self,
+        image: Arc<dyn ImageRows>,
+        retained: usize,
+        mut windows: Vec<Window>,
+    ) -> Option<FilterImage> {
+        let subset = self.sampling.subset;
         if self.requests.iter().any(|request| request.level == 0) {
             windows.push(Window {
                 level: 0,
@@ -179,7 +212,7 @@ impl ImagePlan {
         })))
     }
 
-    fn mip_requests(&self) -> impl Iterator<Item = &Request> {
+    pub(super) fn mip_requests(&self) -> impl Iterator<Item = &Request> {
         self.requests.iter().filter(|request| request.level > 0)
     }
 }
@@ -198,19 +231,20 @@ impl ImageRows for Offset {
 }
 
 /// Texels of one mip level that a draw reads.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Window {
-    level: u8,
+    pub(super) level: u8,
     /// The level's size.
-    size: [u32; 2],
+    pub(super) size: [u32; 2],
     /// Where texel `(0, 0)` of `texels` lies in the level, relative to the subset.
-    origin: [i64; 2],
-    texels: Texels,
+    pub(super) origin: [i64; 2],
+    pub(super) texels: Texels,
 }
 
-enum Texels {
+#[derive(Clone)]
+pub(super) enum Texels {
     /// A window computed for the draw.
-    Kept(Pixmap),
+    Kept(Arc<Pixmap>),
     /// The whole image, `retained` texels of it owned by the draw.
     Shared {
         image: Arc<dyn ImageRows>,
