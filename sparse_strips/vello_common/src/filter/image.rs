@@ -138,6 +138,15 @@ impl ImagePlan {
         Some(total)
     }
 
+    /// Work to stream this draw's mip windows before `share` allocates them.
+    /// Includes channel arithmetic, row copies and level/request scans;
+    /// source conversion and subsequent drawing are charged by the caller.
+    pub fn stream_work(&self) -> u64 {
+        let subset = self.sampling.subset;
+        let requests: Vec<Request> = self.mip_requests().copied().collect();
+        mipmap::stream_work([subset.width(), subset.height()], &requests)
+    }
+
     /// The image texels the draw reads, its mip levels included.
     pub fn base_texels(&self) -> TexelRect {
         let subset = self.sampling.subset;

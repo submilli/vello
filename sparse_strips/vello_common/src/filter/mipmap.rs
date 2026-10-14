@@ -72,6 +72,36 @@ pub(crate) fn base_window(size: [u32; 2], requests: &[Request]) -> TexelRect {
         .unwrap_or(EMPTY)
 }
 
+/// Conservative scalar work for the exact windows `build` streams. Saturation
+/// ensures an overflowing estimate cannot become a small admission charge.
+pub(crate) fn stream_work(size: [u32; 2], requests: &[Request]) -> u64 {
+    let windows = plan_windows(size, requests);
+    let Some(base) = windows.first() else {
+        return 0;
+    };
+    let scans = windows.len() as u64 + requests.len() as u64 + 8;
+    // Reading a source row and retaining it each copy four channels. Every
+    // base row also visits the request list and the streaming level chain.
+    let mut work = base
+        .area()
+        .saturating_mul(8)
+        .saturating_add(u64::from(base.height()).saturating_mul(scans));
+    for (index, window) in windows.iter().enumerate().skip(1) {
+        let finer = level_size(size, (index - 1) as u8);
+        let count = taps(finer[0]).len() as u64 * taps(finer[1]).len() as u64;
+        // Per tap: its weight and four channel multiply/add pairs. The
+        // remaining charge covers division, output and retained-row copies.
+        work = work.saturating_add(window.area().saturating_mul(count * 9 + 16));
+        // Row setup and request scans matter for narrow/tall sources too.
+        work = work
+            .saturating_add(u64::from(window.height()).saturating_mul(requests.len() as u64 + 32));
+    }
+    for request in requests {
+        work = work.saturating_add(request.window.area().saturating_mul(4));
+    }
+    work
+}
+
 const EMPTY: TexelRect = TexelRect {
     x0: 0,
     y0: 0,
@@ -235,6 +265,37 @@ fn downsample(finer: &Level, window: TexelRect, y: u32) -> Option<Vec<PremulRgba
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_work_admits_large_downscales_and_counts_narrow_odd_and_duplicate_windows() {
+        let request = |level, x1, y1| Request {
+            level,
+            window: TexelRect {
+                x0: 0,
+                y0: 0,
+                x1,
+                y1,
+            },
+        };
+        // The existing 16 MiB nested raster must fit the unchanged work cap.
+        let large = stream_work([2048, 2048], &[request(6, 32, 32)]);
+        assert!(large > 4 * 2048 * 2048);
+        assert!(large < (1 << 28) / 2);
+        // Odd dimensions require all nine weighted taps, even for one output.
+        assert!(stream_work([3, 3], &[request(1, 1, 1)]) >= 9 * 8 + 9 * 9);
+        for size in [[1, 2048], [2048, 1]] {
+            let [width, height] = level_size(size, 6);
+            let work = stream_work(size, &[request(6, width, height)]);
+            assert!(work > 8 * 2048);
+            assert!(work < 1 << 28);
+        }
+        let first = request(1, 4, 4);
+        let coarse = request(2, 2, 2);
+        let one = stream_work([16, 16], &[first, coarse]);
+        // A duplicate keeps another output window and scans it on each row.
+        assert!(stream_work([16, 16], &[first, coarse, first]) >= one + 4 * first.window.area());
+        assert_eq!(stream_work([16, 16], &[]), 0);
+    }
 
     /// A one-row alpha image read from a slice.
     struct Alphas<'a>(&'a [u8], u32);
