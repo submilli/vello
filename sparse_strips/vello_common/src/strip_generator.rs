@@ -154,6 +154,14 @@ impl StripGenerator {
         let cull_bbox = clip_path
             .map(|clip_path| clip_path.bbox)
             .unwrap_or(RectU16::new(0, 0, self.width, self.height));
+        let mut path = path.into_iter();
+        let prefix: Vec<_> = path.by_ref().take(8).collect();
+        let snap_edges = aliasing_threshold.is_none()
+            && crate::util::is_axis_aligned(&transform)
+            && stroke.join != crate::kurbo::Join::Round
+            && crate::stroke_rect::rectangle(&prefix).is_some()
+            && stroke.dash_pattern.is_empty();
+        let path = prefix.into_iter().chain(path);
         flatten::stroke(
             self.level,
             path,
@@ -164,6 +172,9 @@ impl StripGenerator {
             &mut self.stroke_ctx,
             cull_bbox,
         );
+        if snap_edges {
+            crate::stroke_rect::snap_edges(&mut self.line_buf);
+        }
         self.generate_with_clip(aliasing_threshold, strip_storage, Fill::NonZero, clip_path);
     }
 

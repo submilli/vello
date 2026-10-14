@@ -228,22 +228,43 @@ pub fn stroke(
     stroke_ctx: &mut StrokeCtx,
     cull_bbox: RectU16,
 ) {
-    // TODO: Temporary hack to ensure that strokes are scaled properly by the transform.
-    let tolerance = TOL
-        / affine.as_coeffs()[0]
-            .abs()
-            .max(affine.as_coeffs()[3].abs())
-            .max(1.);
-
-    expand_stroke(path, style, tolerance, stroke_ctx);
-    fill(
-        level,
-        stroke_ctx.output(),
-        affine,
-        line_buf,
-        flatten_ctx,
-        cull_bbox,
-    );
+    // The largest singular value bounds error in every device-space direction,
+    // including rotated and sheared transforms.
+    let tolerance = TOL / affine.spectral_norm().max(1.0);
+    let mut path = path.into_iter();
+    let prefix: Vec<_> = path.by_ref().take(8).collect();
+    if let Some(outline) = crate::stroke_rect::rectangle(&prefix)
+        .and_then(|rect| crate::stroke_rect::outline(rect, style, tolerance))
+    {
+        fill(level, outline, affine, line_buf, flatten_ctx, cull_bbox);
+        return;
+    }
+    // The infallible renderer API refuses the entire stroke on exhaustion.
+    // Browser callers run the same admission before recording a draw, where
+    // GeometryLimit is reported through their existing fallible boundary.
+    let mut bounded = kurbo::BezPath::new();
+    for element in prefix
+        .into_iter()
+        .chain(path)
+        .take(crate::geometry_budget::MAX_INPUT_ELEMENTS + 1)
+    {
+        bounded.push(element);
+    }
+    if bounded.elements().len() > crate::geometry_budget::MAX_INPUT_ELEMENTS
+        || crate::stroke_union::prepare(
+            level,
+            &bounded,
+            style,
+            affine,
+            line_buf,
+            flatten_ctx,
+            stroke_ctx,
+            &mut crate::stroke_union::Cost::default(),
+        )
+        .is_err()
+    {
+        line_buf.clear();
+    }
 }
 
 /// Expand a stroked path to a filled path.

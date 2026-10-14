@@ -3,7 +3,8 @@
 
 //! Preflight work accounting before the renderer expands strokes.
 //!
-//! This measures input geometry; it does not implement stroke expansion. The
+//! Input work is bounded before expansion; the union pass then admits its actual
+//! flattened edge count before intersection tests and slab processing. The
 //! pinned Kurbo offset algorithm bounds each cubic side at 2^9 leaves: error
 //! refinement stops at depth 8; a cusp split gives same-sign endpoints to each
 //! child, preventing another cusp split without intervening error refinement.
@@ -24,11 +25,22 @@ const MAX_DEVICE_LENGTH: f64 = 262_144.0;
 pub struct StrokeBudget {
     elements: f64,
     device_length: f64,
+    union: crate::stroke_union::Cost,
 }
 
 impl StrokeBudget {
     /// Charge the complete transformed path before flattening or stroking.
     pub fn charge(
+        &mut self,
+        path: &BezPath,
+        style: &Stroke,
+        transform: Affine,
+    ) -> Result<(), GeometryLimit> {
+        self.charge_expansion(path, style, transform)?;
+        crate::stroke_union::admit(path, style, transform, &mut self.union)
+    }
+
+    pub(crate) fn charge_expansion(
         &mut self,
         path: &BezPath,
         style: &Stroke,

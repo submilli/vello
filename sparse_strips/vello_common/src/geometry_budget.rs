@@ -7,6 +7,7 @@
 mod raster;
 mod stroke;
 
+pub(crate) use raster::MAX_INPUT_ELEMENTS;
 pub use raster::RasterBudget;
 pub use stroke::StrokeBudget;
 

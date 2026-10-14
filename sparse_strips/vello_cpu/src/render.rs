@@ -3,6 +3,12 @@
 
 //! Basic render operations.
 
+mod hairline;
+#[cfg(test)]
+mod hairline_context_tests;
+#[cfg(test)]
+mod stroke_tests;
+
 use crate::RenderMode;
 use crate::dispatch::Dispatcher;
 #[cfg(feature = "multithreading")]
@@ -164,6 +170,8 @@ pub struct RenderContext {
     /// The current rendering state.
     pub(crate) state: RenderState,
     root_transforms: RootTransforms,
+    paint_alpha: f32,
+    stroke_source_blend: Option<BlendMode>,
     /// The current mask in place.
     pub(crate) mask: Option<Mask>,
     /// Temporary path buffer to avoid repeated allocations.
@@ -278,6 +286,8 @@ impl RenderContext {
             dispatcher,
             state: RenderState::default(),
             root_transforms: RootTransforms::default(),
+            paint_alpha: 1.0,
+            stroke_source_blend: None,
             aliasing_threshold,
             render_settings: settings,
             mask: None,
@@ -305,14 +315,19 @@ impl RenderContext {
     }
 
     fn encode_current_paint(&mut self) -> Paint {
+        self.encode_paint_alpha(self.paint_alpha)
+    }
+
+    fn encode_paint_alpha(&mut self, alpha: f32) -> Paint {
         match self.state.paint.clone() {
-            PaintType::Solid(s) => s.into(),
+            PaintType::Solid(s) => s.multiply_alpha(alpha).into(),
             PaintType::Gradient(g) => {
                 let transform = self
                     .root_transforms
                     .effective_paint_transform(self.transforms());
                 // TODO: Add caching?
-                g.encode_into(&mut self.encoded_paints, transform, None)
+                g.multiply_alpha(alpha)
+                    .encode_into(&mut self.encoded_paints, transform, None)
             }
             PaintType::Image(i) => {
                 let transform = self
@@ -323,7 +338,7 @@ impl RenderContext {
                     self.root_transforms.root_transform(),
                 );
                 encode_image_into(
-                    &i,
+                    &i.multiply_alpha(alpha),
                     &mut self.encoded_paints,
                     transform,
                     self.state.tint,
@@ -331,6 +346,38 @@ impl RenderContext {
                 )
             }
         }
+    }
+
+    /// Set source paint opacity before rasterization, including each hairline segment.
+    /// Finite values are clamped to `[0, 1]`; nonfinite values use full opacity.
+    pub fn set_paint_alpha(&mut self, alpha: f32) {
+        self.paint_alpha = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+    }
+
+    /// Preserve the source operator when an enclosing effect composites the stroke.
+    /// `None` uses the current drawing blend mode.
+    pub fn set_stroke_source_blend(&mut self, blend: Option<BlendMode>) {
+        self.stroke_source_blend = blend;
+    }
+
+    /// Whether stroke coverage can be folded into paint alpha for this operator.
+    fn supports_stroke_coverage_as_alpha(blend: BlendMode) -> bool {
+        use crate::peniko::{Compose, Mix};
+        blend.mix == Mix::Normal
+            && matches!(
+                blend.compose,
+                Compose::Dest
+                    | Compose::DestOver
+                    | Compose::Plus
+                    | Compose::DestOut
+                    | Compose::SrcAtop
+                    | Compose::SrcOver
+                    | Compose::Xor
+            )
     }
 
     /// Fill a path.
@@ -361,6 +408,9 @@ impl RenderContext {
             let transform = ctx
                 .root_transforms
                 .effective_path_transform(ctx.transforms());
+            if hairline::draw(ctx, path, transform) {
+                return;
+            }
             ctx.dispatcher.stroke_path(
                 path,
                 &ctx.state.stroke,
@@ -417,6 +467,25 @@ impl RenderContext {
             let transform = ctx
                 .root_transforms
                 .effective_path_transform(ctx.transforms());
+            if ctx.aliasing_threshold.is_none()
+                && let Some(frame) =
+                    vello_common::stroke::rectangle_frame(*rect, &ctx.state.stroke, transform)
+            {
+                ctx.dispatcher.fill_path(
+                    &frame,
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    paint,
+                    ctx.state.blend_mode,
+                    None,
+                    ctx.mask.clone(),
+                );
+                return;
+            }
+            let path = ctx.temp_path.clone();
+            if hairline::draw(ctx, &path, transform) {
+                return;
+            }
             ctx.dispatcher.stroke_path(
                 &ctx.temp_path,
                 &ctx.state.stroke,
@@ -466,7 +535,7 @@ impl RenderContext {
 
         let blurred_rect = BlurredRoundedRectangle {
             rect,
-            color,
+            color: color.multiply_alpha(self.paint_alpha),
             radius,
             std_dev,
             invert,
@@ -776,6 +845,8 @@ impl RenderContext {
         self.mask = None;
         self.root_transforms.reset();
         self.state.reset();
+        self.paint_alpha = 1.0;
+        self.stroke_source_blend = None;
     }
 
     /// Push a new clip path to the clip stack.

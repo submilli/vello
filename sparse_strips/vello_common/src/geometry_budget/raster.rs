@@ -6,6 +6,8 @@
 use super::GeometryLimit;
 use crate::kurbo::{Affine, BezPath, PathEl, Point};
 
+pub(crate) const MAX_INPUT_ELEMENTS: usize = 65_536;
+
 /// Cumulative admission before renderer geometry expansion.
 #[derive(Default, Debug)]
 pub struct RasterBudget {
@@ -17,7 +19,7 @@ impl RasterBudget {
     /// Charge the complete transformed path before flattening or stroking.
     pub fn charge(&mut self, path: &BezPath, transform: Affine) -> Result<(), GeometryLimit> {
         self.elements = self.elements.saturating_add(path.elements().len());
-        if self.elements > 65_536 {
+        if self.elements > MAX_INPUT_ELEMENTS {
             return Err(GeometryLimit);
         }
         let mut current = Point::ORIGIN;
